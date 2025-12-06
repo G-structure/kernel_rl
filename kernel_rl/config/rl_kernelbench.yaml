@@ -1,0 +1,75 @@
+# KernelBench RL Training Configuration
+# =====================================
+#
+# This is a template configuration file for training models on KernelBench.
+# Copy and modify for your experiments.
+#
+# Usage:
+#   python -m kernel_rl.scripts.train_kernel_rl \
+#       --config kernel_rl/config/rl_kernelbench.yaml \
+#       log_path=./runs/my_experiment
+
+# Model Configuration
+# -------------------
+model_name: "Qwen/Qwen3-30B-A3B"
+lora_rank: 32
+learning_rate: 0.0001
+
+# Generation Configuration
+# ------------------------
+max_tokens: 4096
+temperature: 1.0
+
+# Training Configuration
+# ----------------------
+num_substeps: 1
+loss_fn: "importance_sampling"
+
+# KL Regularization (optional)
+kl_penalty_coef: 0.0
+kl_discount_factor: 0.0
+
+# Remove groups with constant rewards (no learning signal)
+remove_constant_reward_groups: true
+
+# Logging and Checkpointing
+# -------------------------
+log_path: "./runs/kernel_rl"
+save_every: 10
+eval_every: 10
+
+# Weights & Biases (optional)
+wandb_project: null
+wandb_name: null
+
+# Dataset Configuration
+# ---------------------
+dataset_builder:
+  # Problem selection
+  level: 1
+  start_problem: null  # null = start from beginning
+  end_problem: null    # null = use all problems
+  backend: "triton"
+  dataset_src: "huggingface"
+
+  # Training configuration
+  batch_size: 4      # Problems per batch
+  group_size: 4      # Rollouts per problem
+  num_epochs: 1
+  shuffle: true
+
+  # Evaluation configuration
+  num_correct_trials: 5
+  measure_performance: false  # Set true for speed rewards
+
+  # Reward configuration
+  reward_format_weight: 0.1
+  reward_compile_weight: 0.2
+  reward_correctness_weight: 1.0
+  reward_speed_weight: 0.0  # Enable for stage 3 training
+
+  # Test split
+  test_fraction: 0.1
+
+  # Renderer (should match model)
+  renderer_name: "qwen3"

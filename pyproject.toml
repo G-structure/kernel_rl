@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernel-rl"
+version = "0.1.0"
+description = "RL training for GPU kernel optimization using Tinker and KernelBench"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Kernel RL Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "tinker",
+    "tinker-cookbook",
+    "src",  # KernelBench package
+    "torch>=2.0.0",
+    "numpy",
+    "pyyaml",
+    "pydantic>=2.0.0",
+    "datasets",
+    "tqdm",
+    "chz",
+    "python-dotenv",
+    # KernelBench dependencies
+    "pydra-config",
+    "tomli",
+    "litellm",
+    "hf-transfer>=0.1.9",
+    # Visualization
+    "tensorboard>=2.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+]
+
+[tool.uv.sources]
+# tinker-cookbook installed from local clone
+tinker-cookbook = { path = "../tinker-cookbook", editable = true }
+# KernelBench installed from local clone (package name is "src")
+src = { path = "../KernelBench", editable = true }
+
+[project.scripts]
+train-kernel-rl = "kernel_rl.scripts.train_kernel_rl:main"
+eval-kernel-rl = "kernel_rl.scripts.eval_kernel_rl:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kernel_rl*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

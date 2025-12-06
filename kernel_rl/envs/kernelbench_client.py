@@ -1,0 +1,445 @@
+"""
+KernelBench client wrapper for evaluating generated kernels.
+
+This module provides a Python API to KernelBench evaluation functionality,
+allowing direct evaluation of kernel code without going through the CLI scripts.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import re
+from dataclasses import dataclass, field
+from typing import TypedDict, Optional, Any
+import logging
+
+import torch
+
+logger = logging.getLogger(__name__)
+
+
+class KernelEvalResult(TypedDict):
+    """Result of evaluating a kernel against a reference implementation."""
+    format_ok: bool  # Whether the kernel has valid format (code block extraction)
+    compiled: bool  # Whether the kernel compiled successfully
+    correctness: bool  # Whether all correctness tests passed
+    tests_passed: int  # Number of correctness trials that passed
+    tests_total: int  # Total number of correctness trials
+    speedup: float | None  # Speedup vs baseline (if measured and correct)
+    runtime_ms: float | None  # Kernel runtime in milliseconds
+    baseline_runtime_ms: float | None  # Baseline runtime in milliseconds
+    cheated: bool  # Whether the kernel cheated (e.g., just calls PyTorch)
+    error_message: str | None  # Error message if any
+    metadata: dict[str, Any]  # Additional metadata from evaluation
+
+
+def _ensure_kernelbench_imported() -> None:
+    """Ensure KernelBench modules are importable."""
+    kernelbench_root = os.environ.get("KERNELBENCH_ROOT", "/workspace/KernelBench")
+
+    if not os.path.exists(kernelbench_root):
+        raise RuntimeError(
+            f"KernelBench not found at {kernelbench_root}. "
+            "Set KERNELBENCH_ROOT environment variable or clone to /workspace/KernelBench"
+        )
+
+    # Add KernelBench to path if not already there
+    if kernelbench_root not in sys.path:
+        sys.path.insert(0, kernelbench_root)
+
+
+def extract_code_block(text: str, languages: list[str] | None = None) -> str | None:
+    """
+    Extract the first code block from text.
+
+    Args:
+        text: The text containing code blocks
+        languages: Optional list of language tags to look for (e.g., ["python", "cuda"])
+
+    Returns:
+        The extracted code or None if no valid code block found
+    """
+    if languages is None:
+        languages = ["python", "cuda", "cpp", ""]
+
+    # Try to find fenced code blocks
+    for lang in languages:
+        if lang:
+            pattern = rf"```{lang}\s*\n(.*?)```"
+        else:
+            pattern = r"```\s*\n(.*?)```"
+
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        if matches:
+            return matches[0].strip()
+
+    # If no fenced block, try to find code that looks like a Python module
+    # (contains class definitions, imports, etc.)
+    if "class ModelNew" in text or "def forward" in text:
+        # Try to extract just the code portion
+        lines = text.split("\n")
+        code_lines = []
+        in_code = False
+        for line in lines:
+            if line.strip().startswith(("import ", "from ", "class ", "def ", "@")):
+                in_code = True
+            if in_code:
+                code_lines.append(line)
+        if code_lines:
+            return "\n".join(code_lines)
+
+    return None
+
+
+def check_for_cheating(kernel_code: str) -> bool:
+    """
+    Check if the kernel code is cheating by just wrapping PyTorch calls.
+
+    This is a heuristic check - a kernel that just calls F.conv2d or similar
+    without any custom CUDA/Triton code is considered cheating.
+    """
+    # Look for custom kernel implementations
+    has_triton_kernel = "@triton.jit" in kernel_code or "@triton.autotune" in kernel_code
+    has_cuda_kernel = "load_inline" in kernel_code or "cpp_extension" in kernel_code
+    has_cute_kernel = "cute::" in kernel_code or "from cutlass" in kernel_code
+    has_tilelang = "@T.prim_func" in kernel_code or "tvm.build" in kernel_code
+
+    has_custom_implementation = any([
+        has_triton_kernel,
+        has_cuda_kernel,
+        has_cute_kernel,
+        has_tilelang
+    ])
+
+    # If no custom implementation detected, it might be cheating
+    # But we also need to verify it's not just using torch directly
+    if not has_custom_implementation:
+        # Check if it's just using torch operations
+        torch_ops = [
+            "F.conv", "F.linear", "F.relu", "F.gelu",
+            "torch.mm", "torch.bmm", "torch.matmul",
+            "torch.conv", "torch.nn.functional"
+        ]
+        for op in torch_ops:
+            if op in kernel_code:
+                # Found torch operation without custom kernel
+                return True
+
+    return False
+
+
+def get_reference_code(level: int, problem_id: int, dataset_src: str = "huggingface") -> str:
+    """
+    Get the reference PyTorch code for a problem.
+
+    Args:
+        level: KernelBench level (1, 2, 3, or 4)
+        problem_id: Problem ID within the level
+        dataset_src: Either "huggingface" or "local"
+
+    Returns:
+        The reference architecture source code
+    """
+    _ensure_kernelbench_imported()
+
+    if dataset_src == "huggingface":
+        from datasets import load_dataset
+        dataset = load_dataset("ScalingIntelligence/KernelBench")
+        level_data = dataset[f"level_{level}"]
+
+        # Filter to get the specific problem
+        problem_row = level_data.filter(
+            lambda x: x["problem_id"] == problem_id,
+            num_proc=None,
+            desc=None
+        )
+        if len(problem_row) == 0:
+            raise ValueError(f"Problem {problem_id} not found in level {level}")
+
+        return problem_row["code"][0]
+    else:
+        from src.dataset import construct_kernelbench_dataset
+        from src.utils import read_file
+
+        dataset = construct_kernelbench_dataset(level)
+        # problem_id is 1-indexed, dataset is 0-indexed
+        problem_idx = problem_id - 1
+        if problem_idx < 0 or problem_idx >= len(dataset):
+            raise ValueError(f"Problem {problem_id} not found in level {level}")
+
+        return read_file(dataset[problem_idx])
+
+
+def get_prompt_for_problem(
+    level: int,
+    problem_id: int,
+    backend: str = "triton",
+    option: str = "one_shot",
+    dataset_src: str = "huggingface",
+) -> str:
+    """
+    Get the prompt for a KernelBench problem.
+
+    Args:
+        level: KernelBench level (1, 2, 3, or 4)
+        problem_id: Problem ID within the level
+        backend: Backend type ("cuda", "triton", "cute", "tilelang")
+        option: Prompt option ("zero_shot", "one_shot", "few_shot")
+        dataset_src: Either "huggingface" or "local"
+
+    Returns:
+        The prompt string for the model
+    """
+    _ensure_kernelbench_imported()
+
+    ref_code = get_reference_code(level, problem_id, dataset_src)
+
+    from src.prompt_constructor_toml import get_prompt_for_backend
+
+    prompt = get_prompt_for_backend(
+        ref_code,
+        backend,
+        option=option,
+        precision="fp32",
+        include_hardware=False,
+    )
+
+    return prompt
+
+
+def evaluate_kernel(
+    level: int,
+    problem_id: int,
+    backend: str,
+    kernel_code: str,
+    dataset_src: str = "huggingface",
+    num_correct_trials: int = 5,
+    measure_performance: bool = False,
+    num_perf_trials: int = 100,
+    device: torch.device | None = None,
+    timeout: float = 180.0,
+) -> KernelEvalResult:
+    """
+    Evaluate a generated kernel against the reference implementation.
+
+    Args:
+        level: KernelBench level (1, 2, 3, or 4)
+        problem_id: Problem ID within the level
+        backend: Backend type ("cuda", "triton", "cute", "tilelang")
+        kernel_code: The generated kernel source code
+        dataset_src: Either "huggingface" or "local"
+        num_correct_trials: Number of correctness trials to run
+        measure_performance: Whether to measure runtime performance
+        num_perf_trials: Number of performance trials to run
+        device: CUDA device to use (defaults to cuda:0)
+        timeout: Timeout in seconds for evaluation
+
+    Returns:
+        KernelEvalResult with evaluation results
+    """
+    _ensure_kernelbench_imported()
+
+    # Default result for failures
+    default_result: KernelEvalResult = {
+        "format_ok": False,
+        "compiled": False,
+        "correctness": False,
+        "tests_passed": 0,
+        "tests_total": num_correct_trials,
+        "speedup": None,
+        "runtime_ms": None,
+        "baseline_runtime_ms": None,
+        "cheated": False,
+        "error_message": None,
+        "metadata": {},
+    }
+
+    # Check format - try to extract code if it's wrapped in markdown
+    extracted_code = extract_code_block(kernel_code)
+    if extracted_code is not None:
+        kernel_code = extracted_code
+        default_result["format_ok"] = True
+    elif "class ModelNew" in kernel_code:
+        # Code looks valid even without markdown wrapper
+        default_result["format_ok"] = True
+    else:
+        default_result["error_message"] = "Could not extract valid kernel code from response"
+        return default_result
+
+    # Check for cheating
+    cheated = check_for_cheating(kernel_code)
+    default_result["cheated"] = cheated
+
+    # Get reference code
+    try:
+        ref_code = get_reference_code(level, problem_id, dataset_src)
+    except Exception as e:
+        default_result["error_message"] = f"Failed to load reference code: {e}"
+        return default_result
+
+    # Set up device
+    if device is None:
+        if torch.cuda.is_available():
+            device = torch.device("cuda:0")
+        else:
+            default_result["error_message"] = "No CUDA device available"
+            return default_result
+
+    # Import evaluation function
+    from src.eval import eval_kernel_against_ref, get_torch_dtype_from_string
+
+    try:
+        result = eval_kernel_against_ref(
+            original_model_src=ref_code,
+            custom_model_src=kernel_code,
+            measure_performance=measure_performance,
+            verbose=False,
+            num_correct_trials=num_correct_trials,
+            num_perf_trials=num_perf_trials,
+            build_dir=None,
+            device=device,
+            backend=backend,
+            precision=get_torch_dtype_from_string("fp32"),
+        )
+
+        if result is None:
+            default_result["error_message"] = "Evaluation returned None (possible lock file error)"
+            return default_result
+
+        # Parse the result
+        eval_result: KernelEvalResult = {
+            "format_ok": True,
+            "compiled": result.compiled,
+            "correctness": result.correctness,
+            "tests_passed": 0,
+            "tests_total": num_correct_trials,
+            "speedup": None,
+            "runtime_ms": result.runtime if result.runtime > 0 else None,
+            "baseline_runtime_ms": None,  # TODO: fetch baseline
+            "cheated": cheated,
+            "error_message": None,
+            "metadata": result.metadata,
+        }
+
+        # Parse correctness trials from metadata
+        if "correctness_trials" in result.metadata:
+            trials_str = result.metadata["correctness_trials"]
+            # Format is "(X / Y)"
+            match = re.match(r"\((\d+)\s*/\s*(\d+)\)", trials_str)
+            if match:
+                eval_result["tests_passed"] = int(match.group(1))
+                eval_result["tests_total"] = int(match.group(2))
+
+        # If correct and we have runtime, calculate speedup
+        if eval_result["correctness"] and eval_result["runtime_ms"] is not None:
+            # TODO: Load baseline timing for this problem
+            # For now, speedup is not calculated
+            pass
+
+        # Check for errors in metadata
+        if "runtime_error" in result.metadata:
+            eval_result["error_message"] = str(result.metadata.get("runtime_error", ""))
+        elif "compilation_error" in result.metadata:
+            eval_result["error_message"] = str(result.metadata.get("compilation_error", ""))
+
+        return eval_result
+
+    except Exception as e:
+        default_result["error_message"] = f"Evaluation failed: {e}"
+        logger.exception("Kernel evaluation failed")
+        return default_result
+
+
+def get_problem_count(level: int, dataset_src: str = "huggingface") -> int:
+    """Get the number of problems in a level."""
+    _ensure_kernelbench_imported()
+
+    if dataset_src == "huggingface":
+        from datasets import load_dataset
+        dataset = load_dataset("ScalingIntelligence/KernelBench")
+        return len(dataset[f"level_{level}"])
+    else:
+        from src.dataset import construct_kernelbench_dataset
+        return len(construct_kernelbench_dataset(level))
+
+
+def get_problem_ids(
+    level: int,
+    start: int | None = None,
+    end: int | None = None,
+    dataset_src: str = "huggingface",
+) -> list[int]:
+    """
+    Get list of problem IDs for a level.
+
+    Args:
+        level: KernelBench level
+        start: Start problem ID (inclusive, 1-indexed)
+        end: End problem ID (inclusive, 1-indexed)
+        dataset_src: Either "huggingface" or "local"
+
+    Returns:
+        List of problem IDs
+    """
+    total = get_problem_count(level, dataset_src)
+
+    if start is None:
+        start = 1
+    if end is None:
+        end = total
+
+    return list(range(start, min(end, total) + 1))
+
+
+@dataclass
+class KernelBenchProblem:
+    """Represents a single KernelBench problem."""
+    level: int
+    problem_id: int
+    backend: str = "triton"
+    dataset_src: str = "huggingface"
+
+    _ref_code: str | None = field(default=None, repr=False)
+    _prompt: str | None = field(default=None, repr=False)
+
+    @property
+    def ref_code(self) -> str:
+        """Get the reference PyTorch code (cached)."""
+        if self._ref_code is None:
+            self._ref_code = get_reference_code(
+                self.level, self.problem_id, self.dataset_src
+            )
+        return self._ref_code
+
+    @property
+    def prompt(self) -> str:
+        """Get the prompt for this problem (cached)."""
+        if self._prompt is None:
+            self._prompt = get_prompt_for_problem(
+                self.level,
+                self.problem_id,
+                self.backend,
+                option="one_shot",
+                dataset_src=self.dataset_src,
+            )
+        return self._prompt
+
+    def evaluate(
+        self,
+        kernel_code: str,
+        num_correct_trials: int = 5,
+        measure_performance: bool = False,
+        device: torch.device | None = None,
+    ) -> KernelEvalResult:
+        """Evaluate a kernel solution for this problem."""
+        return evaluate_kernel(
+            level=self.level,
+            problem_id=self.problem_id,
+            backend=self.backend,
+            kernel_code=kernel_code,
+            dataset_src=self.dataset_src,
+            num_correct_trials=num_correct_trials,
+            measure_performance=measure_performance,
+            device=device,
+        )

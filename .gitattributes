@@ -1,0 +1,2 @@
+kernel_rag_index/*.pkl filter=lfs diff=lfs merge=lfs -text
+kernel_rag_index/*.faiss filter=lfs diff=lfs merge=lfs -text
