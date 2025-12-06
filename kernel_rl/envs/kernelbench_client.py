@@ -31,6 +31,7 @@ class KernelEvalResult(TypedDict):
     baseline_runtime_ms: float | None  # Baseline runtime in milliseconds
     cheated: bool  # Whether the kernel cheated (e.g., just calls PyTorch)
     error_message: str | None  # Error message if any
+    code_length: int  # Length of the kernel code in characters (for tie-breaking)
     metadata: dict[str, Any]  # Additional metadata from evaluation
 
 
@@ -252,6 +253,7 @@ def evaluate_kernel(
         "baseline_runtime_ms": None,
         "cheated": False,
         "error_message": None,
+        "code_length": len(kernel_code),
         "metadata": {},
     }
 
@@ -260,6 +262,7 @@ def evaluate_kernel(
     if extracted_code is not None:
         kernel_code = extracted_code
         default_result["format_ok"] = True
+        default_result["code_length"] = len(kernel_code)  # Update with extracted length
     elif "class ModelNew" in kernel_code:
         # Code looks valid even without markdown wrapper
         default_result["format_ok"] = True

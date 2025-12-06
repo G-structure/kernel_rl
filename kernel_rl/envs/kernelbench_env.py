@@ -389,6 +389,7 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
     reward_compile_weight: float = 0.2
     reward_correctness_weight: float = 1.0
     reward_speed_weight: float = 0.0
+    reward_length_weight: float = 0.05  # Tie-breaking for uniform rewards
 
     # Renderer
     renderer_name: str = "qwen3"
@@ -440,6 +441,7 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
             compile_weight=self.reward_compile_weight,
             correctness_weight=self.reward_correctness_weight,
             speed_weight=self.reward_speed_weight,
+            length_weight=self.reward_length_weight,
         )
 
         # Create train dataset

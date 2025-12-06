@@ -27,6 +27,7 @@ class RewardConfig:
     compile_weight: float = 0.2  # Reward for successful compilation
     correctness_weight: float = 1.0  # Reward for passing tests
     speed_weight: float = 0.0  # Reward for speedup (disabled by default)
+    length_weight: float = 0.05  # Reward for concise code (tie-breaking)
 
     # Penalties
     cheating_penalty: float = -1.0  # Penalty for just wrapping PyTorch
@@ -36,6 +37,10 @@ class RewardConfig:
     speed_baseline: float = 1.0  # Speedup threshold for positive reward
     speed_scale: float = 0.5  # Scale factor for log speedup
     speed_max_reward: float = 1.0  # Maximum speed reward
+
+    # Length reward configuration (GRPO-LEAD style tie-breaking)
+    length_max: int = 8000  # Code longer than this gets 0 length reward
+    length_min: int = 500  # Code shorter than this gets max length reward
 
     # Whether to use sparse rewards (only reward fully correct solutions)
     sparse_rewards: bool = False
@@ -148,6 +153,38 @@ def speed_reward(
     return min(reward, config.speed_max_reward)
 
 
+def length_reward(eval_result: "KernelEvalResult", config: RewardConfig) -> float:
+    """
+    Compute reward based on code length (GRPO-LEAD style tie-breaking).
+
+    This provides a continuous signal that breaks ties when other rewards are uniform.
+    Shorter code gets higher reward, encouraging concise solutions.
+
+    The reward is linearly interpolated:
+    - Code <= length_min: reward = 1.0
+    - Code >= length_max: reward = 0.0
+    - In between: linear interpolation
+
+    Args:
+        eval_result: Evaluation result containing code_length
+        config: Reward configuration
+
+    Returns:
+        Length reward in [0, 1]
+    """
+    code_length = eval_result.get("code_length", 0)
+
+    if code_length <= config.length_min:
+        return 1.0
+    elif code_length >= config.length_max:
+        return 0.0
+    else:
+        # Linear interpolation
+        range_size = config.length_max - config.length_min
+        position = code_length - config.length_min
+        return 1.0 - (position / range_size)
+
+
 def compute_reward(
     eval_result: "KernelEvalResult",
     config: RewardConfig | None = None,
@@ -160,6 +197,7 @@ def compute_reward(
     - Compile reward
     - Correctness reward
     - Speed reward (optional)
+    - Length reward (tie-breaking for uniform rewards)
 
     With sparse_rewards=True, only fully correct solutions get reward.
 
@@ -181,6 +219,10 @@ def compute_reward(
             if config.speed_weight > 0:
                 s_reward = speed_reward(eval_result, config, use_speed=True)
                 base_reward += config.speed_weight * s_reward
+            # Add length bonus for tie-breaking
+            if config.length_weight > 0:
+                l_reward = length_reward(eval_result, config)
+                base_reward += config.length_weight * l_reward
             return base_reward
         return 0.0
 
@@ -189,12 +231,14 @@ def compute_reward(
     c_reward = compile_reward(eval_result, config)
     corr_reward = correctness_reward(eval_result, config)
     s_reward = speed_reward(eval_result, config, use_speed=config.speed_weight > 0)
+    l_reward = length_reward(eval_result, config)
 
     total = (
         config.format_weight * f_reward
         + config.compile_weight * c_reward
         + config.correctness_weight * corr_reward
         + config.speed_weight * s_reward
+        + config.length_weight * l_reward
     )
 
     return total
@@ -218,6 +262,7 @@ def compute_reward_breakdown(
         "reward_compile": compile_reward(eval_result, config),
         "reward_correctness": correctness_reward(eval_result, config),
         "reward_speed": speed_reward(eval_result, config, use_speed=True),
+        "reward_length": length_reward(eval_result, config),
         "reward_total": compute_reward(eval_result, config),
     }
 

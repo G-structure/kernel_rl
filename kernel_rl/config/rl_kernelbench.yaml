@@ -54,7 +54,7 @@ dataset_builder:
 
   # Training configuration
   batch_size: 4      # Problems per batch
-  group_size: 4      # Rollouts per problem
+  group_size: 8      # Rollouts per problem (increased for better reward variance)
   num_epochs: 1
   shuffle: true
 
@@ -67,6 +67,7 @@ dataset_builder:
   reward_compile_weight: 0.2
   reward_correctness_weight: 1.0
   reward_speed_weight: 0.0  # Enable for stage 3 training
+  reward_length_weight: 0.05  # Tie-breaking for uniform rewards (GRPO-LEAD style)
 
   # Test split
   test_fraction: 0.1
