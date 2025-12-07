@@ -44,7 +44,7 @@ remove_constant_reward_groups: true
 # Logging and Checkpointing
 # -------------------------
 log_path: "./runs/kernel_rl"
-save_every: 10
+save_every: 1   # Save after every batch (kernel eval can crash GPU)
 eval_every: 10
 
 # Weights & Biases (optional)

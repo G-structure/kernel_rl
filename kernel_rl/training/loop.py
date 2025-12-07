@@ -513,7 +513,15 @@ async def save_checkpoint_and_get_sampling_client(
     metrics = {}
 
     with timed("save_checkpoint", metrics):
-        if save_every > 0 and batch_idx > start_batch and batch_idx % save_every == 0:
+        # Always save checkpoint: at start (batch_idx == start_batch) or every save_every batches
+        # This ensures we can resume even if training crashes early
+        should_save = (
+            save_every > 0 and (
+                batch_idx == start_batch or  # Initial checkpoint
+                (batch_idx > start_batch and batch_idx % save_every == 0)  # Periodic checkpoints
+            )
+        )
+        if should_save:
             path_dict = await checkpoint_utils.save_checkpoint_async(
                 training_client=training_client,
                 name=f"{batch_idx:06d}",

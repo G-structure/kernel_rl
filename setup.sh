@@ -25,6 +25,16 @@ else
     echo "✓ just installed ($(just --version))"
 fi
 
+# Install git-lfs
+if command -v git-lfs &> /dev/null; then
+    echo "✓ git-lfs already installed ($(git-lfs --version))"
+else
+    echo "Installing git-lfs..."
+    apt-get update && apt-get install -y git-lfs
+    echo "✓ git-lfs installed ($(git-lfs --version))"
+fi
+git lfs install
+
 # Sync Python dependencies
 echo ""
 echo "Syncing Python dependencies..."
