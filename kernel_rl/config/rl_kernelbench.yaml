@@ -1,37 +1,50 @@
-# KernelBench RL Training Configuration
-# =====================================
+# KernelBench RL Training Configuration (Kevin-32B Compatible)
+# =============================================================
 #
-# Default configuration: Kevin mode (multi-turn) + RA-ICL
-# This combines retrieval-augmented prompts with multi-turn refinement.
+# Configuration aligned with Kevin-32B paper (arXiv:2507.11948):
+# - Multi-turn refinement with discounted returns (gamma=0.4)
+# - Kevin reward formula: S = 0.3·correct + speedup
+# - No length penalties (causes response collapse)
+# - No thinking rewards (thinking removed from prompts)
+# - Binary correctness (no partial credit)
+# - Zero reward for cheating (PyTorch wrapping, try-except, pass)
 #
 # Usage:
 #   python -m kernel_rl.scripts.train_kernel_rl \
 #       --config kernel_rl/config/rl_kernelbench.yaml \
 #       log_path=./runs/my_experiment
 
+# =============================================================================
 # Model Configuration
-# -------------------
+# Kevin uses QwQ-32B, we use Qwen3-30B-A3B (similar architecture)
+# =============================================================================
 model_name: "Qwen/Qwen3-30B-A3B"
 lora_rank: 32
-learning_rate: 0.0001
+learning_rate: 0.000002  # Kevin uses 2e-6 (very conservative)
 
+# =============================================================================
 # Generation Configuration
-# ------------------------
-max_tokens: 4096
+# Kevin uses 16K initially, extends to 22K at step 30
+# =============================================================================
+max_tokens: 16384  # Kevin uses 16K-22K tokens
 temperature: 1.0
 
+# =============================================================================
 # Training Mode
-# -------------
-mode: "multi_turn"  # Kevin-style multi-turn refinement (default)
+# =============================================================================
+mode: "multi_turn"  # Kevin-style multi-turn refinement
 
+# =============================================================================
 # Multi-Turn Configuration (Kevin Mode)
-# --------------------------------------
-max_turns: 4        # Maximum refinement attempts per problem
-gamma: 0.4          # Discount factor for future rewards
+# =============================================================================
+max_turns: 4        # Kevin uses T=4 refinement attempts
+gamma: 0.4          # Kevin paper: gamma=0.4 works best
 
+# =============================================================================
 # Training Configuration
-# ----------------------
-num_substeps: 1
+# Kevin: 2 gradient steps per batch, aggressive gradient clipping (0.05)
+# =============================================================================
+num_substeps: 2  # Kevin uses 2 gradient steps per batch
 loss_fn: "importance_sampling"
 
 # KL Regularization (optional)
@@ -41,8 +54,9 @@ kl_discount_factor: 0.0
 # Remove groups with constant rewards (no learning signal)
 remove_constant_reward_groups: true
 
+# =============================================================================
 # Logging and Checkpointing
-# -------------------------
+# =============================================================================
 log_path: "./runs/kernel_rl"
 save_every: 1   # Save after every batch (kernel eval can crash GPU)
 eval_every: 10
@@ -51,8 +65,10 @@ eval_every: 10
 wandb_project: null
 wandb_name: null
 
+# =============================================================================
 # Dataset Configuration
-# ---------------------
+# Kevin: 8 tasks per batch, 16 parallel trajectories per task
+# =============================================================================
 dataset_builder:
   # Problem selection
   level: 1
@@ -62,22 +78,27 @@ dataset_builder:
   dataset_src: "huggingface"
 
   # Training configuration
-  # Note: For multi-turn, effective samples = batch_size * group_size * max_turns
-  batch_size: 2      # Reduced for multi-turn overhead
-  group_size: 4      # Rollouts per problem
+  # Kevin: 8 tasks × 16 trajectories = 128 samples per batch
+  # Adjust based on your GPU memory
+  batch_size: 8       # Kevin uses 8 tasks per batch
+  group_size: 16      # Kevin uses 16 parallel trajectories per task
   num_epochs: 1
   shuffle: true
 
   # Evaluation configuration
   num_correct_trials: 5
-  measure_performance: false  # Set true for speed rewards
+  measure_performance: true  # Enable for speed rewards (Kevin uses speedup)
 
-  # Reward configuration (per-step scores, converted to discounted returns)
-  reward_format_weight: 0.1
-  reward_compile_weight: 0.2
-  reward_correctness_weight: 1.0
-  reward_speed_weight: 0.0  # Enable for stage 3 training
-  reward_length_weight: 0.05  # Tie-breaking for uniform rewards (GRPO-LEAD style)
+  # ==========================================================================
+  # Reward configuration (Kevin-32B compatible)
+  # Kevin formula: S = 0.3·correct + speedup
+  # ==========================================================================
+  reward_format_weight: 0.0        # Kevin doesn't use
+  reward_compile_weight: 0.0       # Kevin doesn't use
+  reward_correctness_weight: 0.3   # Kevin uses 0.3 for binary correctness
+  reward_speed_weight: 1.0         # Kevin adds speedup directly
+  reward_length_weight: 0.0        # Kevin: causes response collapse
+  reward_thinking_weight: 0.0      # Kevin removes thinking from prompts
 
   # Test split
   test_fraction: 0.1

@@ -273,7 +273,7 @@ class ModelNew(nn.Module):
 
 
 REFINEMENT_TEMPLATE = """
-{thinking_section}## Previous Attempt (Turn {turn})
+## Previous Attempt (Turn {turn})
 
 ```python
 {previous_kernel}
@@ -295,6 +295,9 @@ Keep what works. Do not change the function signature unless necessary. Do not u
 
 Remember: respond using <think>...</think> followed by <KERNEL>...</KERNEL>.
 """
+# NOTE: Kevin-32B removes thinking/CoT from multi-turn prompts for context management.
+# "each prompt will now only include the previously generated kernels and evaluation results"
+# The thinking_section was removed from this template per Kevin paper (arXiv:2507.11948).
 
 ERROR_SECTION_TEMPLATE = """### Error Details
 ```
@@ -434,14 +437,13 @@ class MultiTurnKernelBenchEnv(Env):
             if not guidance:
                 guidance = "Fix the issues in the previous attempt and try again."
 
-            # Build thinking section only if model provided analysis
-            thinking_section = ""
-            if self.state.last_thought:
-                thinking_section = f"## Previous Turn Summary (Model's Analysis)\n{self.state.last_thought}\n\n"
+            # NOTE: Kevin-32B removes thinking/CoT from multi-turn prompts
+            # "each prompt will now only include the previously generated kernels
+            # and evaluation results" - arXiv:2507.11948
+            # We still track last_thought for logging/analysis, but don't include in prompt
 
             refinement_text = REFINEMENT_TEMPLATE.format(
                 turn=self.state.turn_idx,
-                thinking_section=thinking_section,
                 previous_kernel=_truncate_kernel(self.state.last_kernel),
                 error_category=error_category_display,
                 compiled="Yes" if eval_result["compiled"] else "No",

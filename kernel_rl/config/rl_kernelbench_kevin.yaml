@@ -1,15 +1,16 @@
-# KernelBench RL Training - Kevin Mode (Multi-Turn)
-# ==================================================
+# KernelBench RL Training - Kevin-32B Reference Configuration
+# ============================================================
 #
-# This configuration enables multi-turn refinement training, inspired by
-# Cognition's Kevin-32B approach. The model gets multiple attempts to fix
-# its kernel, with feedback from compilation/runtime errors after each turn.
+# This configuration matches Kevin-32B paper (arXiv:2507.11948) as closely
+# as possible. Use this for reproducing Kevin results.
 #
-# Key differences from single-turn:
-#   - Multiple refinement turns per problem (default: 4)
-#   - Discounted returns: R_t = s_t + gamma*s_{t+1} + gamma^2*s_{t+2} + ...
-#   - Per-turn feedback includes error messages and guidance
-#   - Metrics track per-turn and per-trajectory success rates
+# Kevin-32B Key Innovations:
+#   - Multi-turn refinement (T=4 turns)
+#   - Discounted returns: R_t = s_t + 0.4*R_{t+1}
+#   - Simple reward: S = 0.3·correct + speedup
+#   - No length/thinking penalties (causes collapse)
+#   - Zero reward for cheating (PyTorch, try-except, pass)
+#   - Thinking removed from prompts (context management)
 #
 # Prerequisites:
 #   1. Build the RAG index (recommended for better initial attempts):
@@ -20,29 +21,37 @@
 #       --config kernel_rl/config/rl_kernelbench_kevin.yaml \
 #       log_path=./runs/kevin_experiment
 
+# =============================================================================
 # Model Configuration
-# -------------------
+# Kevin uses QwQ-32B, we use Qwen3-30B-A3B
+# =============================================================================
 model_name: "Qwen/Qwen3-30B-A3B"
 lora_rank: 32
-learning_rate: 0.0001
+learning_rate: 0.000002  # Kevin: 2e-6 constant with 0.03 warmup ratio
 
+# =============================================================================
 # Generation Configuration
-# ------------------------
-max_tokens: 4096
+# Kevin: 16K initially, 22K at step 30
+# =============================================================================
+max_tokens: 16384
 temperature: 1.0
 
+# =============================================================================
 # Training Mode
-# -------------
-mode: "multi_turn"  # Enable Kevin-style multi-turn refinement
+# =============================================================================
+mode: "multi_turn"  # Kevin-style multi-turn refinement
 
+# =============================================================================
 # Multi-Turn Configuration (Kevin Mode)
-# --------------------------------------
-max_turns: 4        # Maximum refinement attempts per problem (T in Kevin paper)
-gamma: 0.4          # Discount factor for future rewards (from Kevin paper)
+# =============================================================================
+max_turns: 4        # Kevin: T=4 refinement attempts
+gamma: 0.4          # Kevin: gamma=0.4 (ablation showed this works best)
 
+# =============================================================================
 # Training Configuration
-# ----------------------
-num_substeps: 1
+# Kevin: 2 gradient steps per batch, 0.05 gradient clipping
+# =============================================================================
+num_substeps: 2     # Kevin uses 2 gradient steps per batch
 loss_fn: "importance_sampling"
 
 # KL Regularization (optional)
@@ -52,18 +61,21 @@ kl_discount_factor: 0.0
 # Remove groups with constant rewards (no learning signal)
 remove_constant_reward_groups: true
 
+# =============================================================================
 # Logging and Checkpointing
-# -------------------------
+# =============================================================================
 log_path: "./runs/kernel_rl_kevin"
-save_every: 10
+save_every: 1   # Save every batch for crash recovery
 eval_every: 10
 
 # Weights & Biases (optional)
 wandb_project: null
 wandb_name: null
 
-# Dataset Configuration with RA-ICL
-# ----------------------------------
+# =============================================================================
+# Dataset Configuration
+# Kevin: 8 tasks per batch, 16 parallel trajectories per task
+# =============================================================================
 dataset_builder:
   # Problem selection
   level: 1
@@ -73,23 +85,26 @@ dataset_builder:
   dataset_src: "huggingface"
 
   # Training configuration
-  # Note: For multi-turn, effective samples per batch = batch_size * group_size * max_turns
-  batch_size: 2       # Reduced batch size due to multi-turn overhead
-  group_size: 4       # Rollouts per problem
+  # Kevin: 8 × 16 = 128 samples per batch
+  batch_size: 8       # Kevin: 8 tasks per batch
+  group_size: 16      # Kevin: 16 parallel trajectories per task
   num_epochs: 1
   shuffle: true
 
   # Evaluation configuration
   num_correct_trials: 5
-  measure_performance: false  # Enable for speed rewards in later training
+  measure_performance: true  # Kevin uses speedup in reward
 
-  # Reward configuration
-  # These define the per-step score s_t, which gets converted to discounted R_t
-  reward_format_weight: 0.1
-  reward_compile_weight: 0.2
-  reward_correctness_weight: 1.0
-  reward_speed_weight: 0.0     # Enable for stage 3 training
-  reward_length_weight: 0.05
+  # ==========================================================================
+  # Reward configuration (Kevin-32B exact)
+  # Kevin formula: S = 0.3·𝟙{correct} + (T_baseline/T_kernel)·𝟙{correct}
+  # ==========================================================================
+  reward_format_weight: 0.0        # Kevin: not used
+  reward_compile_weight: 0.0       # Kevin: not used
+  reward_correctness_weight: 0.3   # Kevin: 0.3 for binary correctness
+  reward_speed_weight: 1.0         # Kevin: linear speedup
+  reward_length_weight: 0.0        # Kevin: causes response collapse
+  reward_thinking_weight: 0.0      # Kevin: thinking removed from prompts
 
   # Test split
   test_fraction: 0.1
@@ -97,8 +112,7 @@ dataset_builder:
   # Renderer (should match model)
   renderer_name: "qwen3"
 
-  # RA-ICL Configuration (highly recommended for multi-turn)
-  # Provides good initial examples to reduce wasted turns
+  # RA-ICL Configuration
   prompt_option: "raicl"
   rag_index_path: "./kernel_rag_index"
   raicl_k: 3

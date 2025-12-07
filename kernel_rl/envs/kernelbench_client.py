@@ -264,12 +264,43 @@ def extract_code_block(text: str, languages: list[str] | None = None) -> str | N
 
 def check_for_cheating(kernel_code: str) -> bool:
     """
-    Check if the kernel code is cheating by just wrapping PyTorch calls.
+    Check if the kernel code is cheating using Kevin-32B paper rules.
 
-    This is a heuristic check - a kernel that just calls F.conv2d or similar
-    without any custom CUDA/Triton code is considered cheating.
+    Kevin paper identifies three cheating patterns that receive zero reward:
+    1. PyTorch wrapping: Using torch.nn or torch.nn.functional
+    2. Try-except fallback: Wrapping incomplete CUDA in exception handlers
+    3. Inheritance bypass: Using 'pass' to inherit from reference
+
+    Reference: arXiv:2507.11948 "Kevin: Multi-Turn RL for Generating CUDA Kernels"
     """
-    # Look for custom kernel implementations
+    # Kevin Rule 1: PyTorch wrapping detection
+    # Zero reward for kernels containing torch.nn or torch.nn.functional
+    pytorch_patterns = [
+        "torch.nn.functional",
+        "torch.nn.",
+        "F.conv", "F.linear", "F.relu", "F.gelu", "F.softmax",
+        "F.batch_norm", "F.layer_norm", "F.dropout",
+        "nn.functional.",
+    ]
+    for pattern in pytorch_patterns:
+        if pattern in kernel_code:
+            return True
+
+    # Kevin Rule 2: Try-except fallback pattern detection
+    # Models wrap incomplete CUDA in exception handlers that fall back to PyTorch
+    # Zero reward for kernels containing try/except
+    if "try:" in kernel_code or "except:" in kernel_code or "except " in kernel_code:
+        return True
+
+    # Kevin Rule 3: Inheritance bypass detection
+    # Model inherits from reference using 'pass'
+    # Zero reward for kernels containing pass statements
+    # Be careful to not match 'passed' or similar words
+    import re
+    if re.search(r'\bpass\b', kernel_code):
+        return True
+
+    # Additional check: no custom kernel implementation at all
     has_triton_kernel = "@triton.jit" in kernel_code or "@triton.autotune" in kernel_code
     has_cuda_kernel = "load_inline" in kernel_code or "cpp_extension" in kernel_code
     has_cute_kernel = "cute::" in kernel_code or "from cutlass" in kernel_code
@@ -282,18 +313,14 @@ def check_for_cheating(kernel_code: str) -> bool:
         has_tilelang
     ])
 
-    # If no custom implementation detected, it might be cheating
-    # But we also need to verify it's not just using torch directly
+    # If no custom implementation, check for direct torch ops
     if not has_custom_implementation:
-        # Check if it's just using torch operations
         torch_ops = [
-            "F.conv", "F.linear", "F.relu", "F.gelu",
             "torch.mm", "torch.bmm", "torch.matmul",
-            "torch.conv", "torch.nn.functional"
+            "torch.conv", "torch.einsum",
         ]
         for op in torch_ops:
             if op in kernel_code:
-                # Found torch operation without custom kernel
                 return True
 
     return False
