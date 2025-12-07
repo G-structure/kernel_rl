@@ -8,8 +8,25 @@ This project uses **Reinforcement Learning with Verifiable Rewards (RLVR)** to f
 
 - Uses **KernelBench** as the environment and reward source
 - Uses **Tinker** for distributed LoRA fine-tuning with GRPO-style RL
+- **Default mode**: Kevin-style multi-turn refinement + RA-ICL retrieval
+- Supports **Qwen3 thinking tokens** (`<think>...</think>` blocks)
 - Supports progressive training stages: format → compile → correctness → speed
-- Designed for multi-turn extensions (Kevin-style compile→debug→patch loops)
+
+## Quick Start
+
+```bash
+# 1. Build the RAG index (one-time, ~10 min)
+just build-rag-index
+
+# 2. Start training (Kevin mode + RA-ICL is default)
+just train my_experiment
+
+# 3. Monitor progress
+just watch-kevin my_experiment
+
+# 4. Resume if crashed
+just resume my_experiment
+```
 
 ## Environment
 
@@ -146,20 +163,73 @@ Query PyTorch Code → BGE-Code Embedding → FAISS Search → Top-K Examples �
 just build-rag-index --model nomic-ai/nomic-embed-code
 ```
 
+## Structured Output Format
+
+The model is trained to produce outputs in a structured format with explicit reasoning:
+
+    <think>
+    1-5 short bullet points describing:
+    - What optimization strategy you will use
+    - Key implementation details (tiling, memory layout, etc.)
+    - Any constraints or edge cases to handle
+
+    Keep this section under 150 tokens.
+    </think>
+
+    <KERNEL>
+    ```python
+    class ModelNew(nn.Module):
+        ...
+    ```
+    </KERNEL>
+
+### Thinking Tokens
+
+This project supports **Qwen3's native thinking tokens** (`<think>...</think>`) following the approach from [Kevin-32B](https://cognition.ai/blog/kevin-32b):
+
+- **Structured reasoning**: The `<think>` block encourages the model to plan before coding
+- **Multi-turn context**: In refinement turns, the previous turn's thinking summary is included to preserve reasoning state
+- **Thinking reward**: A small bonus rewards using the thinking format (configurable via `thinking_weight`)
+
+Based on research findings (Kevin paper), the thinking reward is **generous with no harsh penalties**:
+- No thinking: neutral reward (0.5)
+- Any thinking: full bonus (1.0)
+- Very long thinking: gentle decay to floor (0.7)
+
+This avoids the "response collapse" that occurs with harsh length penalties.
+
+### Parsing
+
+The system parses both Qwen3 (`<think>`) and Kevin (`<THOUGHT>`) formats. If the structured format isn't found, it falls back to extracting Python code blocks.
+
 ## Training
 
-### Basic Training Run
+The default configuration uses **Kevin mode (multi-turn) + RA-ICL**. This means:
+- Model gets 4 refinement attempts per problem
+- Each attempt receives error feedback from the previous attempt
+- RA-ICL provides relevant kernel examples from a 34K+ corpus
+- Checkpoints saved after every batch for crash recovery
+
+### Using Justfile Commands
 
 ```bash
-uv run python -m kernel_rl.scripts.train_kernel_rl \
-    model_name=Qwen/Qwen2.5-Coder-7B-Instruct \
-    log_path=./runs/kernel_rl_v1 \
-    level=1 \
-    batch_size=4 \
-    group_size=4
+# Start training (uses default config with Kevin + RA-ICL)
+just train my_experiment
+
+# Monitor Kevin mode metrics
+just watch-kevin my_experiment
+
+# Resume from checkpoint if crashed
+just resume my_experiment
+
+# View logs
+just logs my_experiment
+
+# Check training status
+just status
 ```
 
-### With Config File
+### Manual Training
 
 ```bash
 uv run python -m kernel_rl.scripts.train_kernel_rl \
@@ -171,14 +241,47 @@ uv run python -m kernel_rl.scripts.train_kernel_rl \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `model_name` | HuggingFace model ID | `Qwen/Qwen2.5-Coder-7B-Instruct` |
+| `model_name` | HuggingFace model ID | `Qwen/Qwen3-30B-A3B` |
+| `mode` | `"single_turn"` or `"multi_turn"` | `"multi_turn"` |
+| `max_turns` | Refinement attempts (Kevin mode) | `4` |
+| `gamma` | Discount factor for future rewards | `0.4` |
 | `level` | KernelBench level (1-4) | `1` |
-| `batch_size` | Problems per batch | `4` |
+| `batch_size` | Problems per batch | `2` |
 | `group_size` | Rollouts per problem | `4` |
 | `learning_rate` | LoRA learning rate | `1e-4` |
 | `lora_rank` | LoRA rank | `32` |
 | `max_tokens` | Max generation tokens | `4096` |
-| `temperature` | Sampling temperature | `1.0` |
+| `save_every` | Checkpoint frequency | `1` (every batch) |
+
+### Checkpoints and Resume
+
+Checkpoints are saved to Tinker cloud after every batch. The checkpoint paths are recorded in `{log_path}/checkpoints.jsonl`.
+
+```bash
+# Resume training after a crash
+just resume my_experiment
+
+# Or manually:
+uv run python -m kernel_rl.scripts.train_kernel_rl \
+    --config kernel_rl/config/rl_kernelbench.yaml \
+    log_path=./runs/my_experiment \
+    load_checkpoint_path=./runs/my_experiment
+```
+
+**Note**: Kernel evaluation can sometimes crash the GPU with illegal memory access errors. The frequent checkpointing ensures minimal progress loss.
+
+### Reward Configuration
+
+The reward is a weighted combination of components:
+
+| Weight | Description | Default |
+|--------|-------------|---------|
+| `reward_format_weight` | Valid `<KERNEL>` block extraction | 0.1 |
+| `reward_compile_weight` | Successful compilation | 0.2 |
+| `reward_correctness_weight` | Passing tests (partial credit) | 1.0 |
+| `reward_speed_weight` | Speedup over baseline | 0.0 |
+| `reward_length_weight` | Code brevity (tie-breaking) | 0.05 |
+| `reward_thinking_weight` | Using `<think>` blocks | 0.1 |
 
 ### Reward Stages
 
@@ -227,6 +330,7 @@ Then open http://localhost:6006 in your browser.
 |----------|---------|-------------|
 | **Reward** | Mean, StdDev, Min, Max | Reward distribution across trajectories |
 | **Kernel Quality** | FormatRate, CompileRate, CorrectRate, CheatRate | Success rates at each stage |
+| **Thinking** | thought_length, has_thought | Thinking token usage (chars, boolean) |
 | **Progress** | CompletionFraction, LearningRate | Training progress tracking |
 | **Timing** | Total, Rollout, Train, SaveCheckpoint | Time breakdown per batch |
 | **Per-Level** | RewardMean, CorrectRate per level | Breakdown by difficulty level |
@@ -330,14 +434,14 @@ kernel_rl/
 │   ├── eval_kernel_rl.py           # Evaluation CLI
 │   └── build_rag_index.py          # RAG index builder
 └── config/
-    ├── rl_kernelbench.yaml         # Default config (single-turn)
+    ├── rl_kernelbench.yaml         # Default config (Kevin + RA-ICL)
     ├── rl_kernelbench_raicl.yaml   # RA-ICL config (single-turn)
-    └── rl_kernelbench_kevin.yaml   # Kevin mode config (multi-turn)
+    └── rl_kernelbench_kevin.yaml   # Kevin mode config (multi-turn, legacy)
 ```
 
 ## Multi-Turn Training (Kevin Mode)
 
-This implementation includes **Kevin-style multi-turn refinement training**, inspired by [Cognition's Kevin-32B](https://cognition.ai/blog/kevin-32b).
+This implementation includes **Kevin-style multi-turn refinement training**, inspired by [Cognition's Kevin-32B](https://cognition.ai/blog/kevin-32b). **This is now the default training mode.**
 
 ### How It Works
 
@@ -357,50 +461,55 @@ This encourages the model to generate kernels that are easy to fix in subsequent
 ### Quick Start
 
 ```bash
-# Train with Kevin mode
-uv run python -m kernel_rl.scripts.train_kernel_rl \
-    --config kernel_rl/config/rl_kernelbench_kevin.yaml \
-    log_path=./runs/kevin_experiment
+# Kevin mode is now the default - just run:
+just train my_experiment
 
-# Or enable multi-turn on any config:
+# To use single-turn mode instead:
 uv run python -m kernel_rl.scripts.train_kernel_rl \
-    --config kernel_rl/config/rl_kernelbench_raicl.yaml \
-    mode=multi_turn \
-    max_turns=4 \
-    gamma=0.4 \
-    log_path=./runs/my_kevin_run
+    --config kernel_rl/config/rl_kernelbench.yaml \
+    mode=single_turn \
+    log_path=./runs/single_turn_experiment
 ```
 
 ### Kevin Mode Parameters
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `mode` | `"single_turn"` or `"multi_turn"` | `"single_turn"` |
+| `mode` | `"single_turn"` or `"multi_turn"` | `"multi_turn"` |
 | `max_turns` | Maximum refinement attempts | `4` |
 | `gamma` | Discount factor for future rewards | `0.4` |
 
 ### Error Feedback
 
 On each refinement turn, the model receives:
+- **Previous thinking summary**: The model's `<think>` content from the last turn (preserves reasoning context)
 - **Error category**: COMPILATION ERROR, RUNTIME ERROR, CORRECTNESS ERROR, etc.
 - **Detailed error**: Extracted key error message (cleaned of traceback noise)
 - **Guidance**: Category-specific hints for fixing the error
 
 Example feedback:
-```
-## Evaluation Feedback
-- **Status**: COMPILATION ERROR - Build failed
-- **Compiled**: No
-- **Tests Passed**: 0/5
 
-### Error Details
-```
-AttributeError: module 'triton.language' has no attribute 'tanh'
-```
+    ## Previous Turn Summary (Model's Analysis)
+    - Fusing elementwise ops with matmul
+    - Using Triton's tl.dot for the computation
+    - Need to handle edge cases for non-divisible dims
 
-## Instructions
-Fix the TRITON syntax/API errors. Check that all kernel functions are correctly decorated and all imports are valid.
-```
+    ## Previous Attempt (Turn 1)
+    [kernel code shown here]
+
+    ## Evaluation Feedback
+    - **Status**: COMPILATION ERROR - Build failed
+    - **Compiled**: No
+    - **Tests Passed**: 0/5
+
+    ### Error Details
+    AttributeError: module 'triton.language' has no attribute 'tanh'
+
+    ## Instructions
+    Fix the TRITON syntax/API errors. Check that all kernel functions
+    are correctly decorated and all imports are valid.
+
+    Remember: respond using <think>...</think> followed by <KERNEL>...</KERNEL>.
 
 ### Kevin Mode Metrics
 
@@ -429,6 +538,18 @@ Progressive training through:
 
 ## Troubleshooting
 
+### CUDA illegal memory access / Training crashes
+Generated kernels can sometimes corrupt GPU memory. This is handled by:
+- Checkpoints saved after every batch (`save_every: 1`)
+- Resume capability: `just resume my_experiment`
+
+If crashes are frequent:
+```bash
+# Clear GPU memory and restart
+nvidia-smi --gpu-reset  # If needed
+just resume my_experiment
+```
+
 ### CUDA out of memory
 Reduce `batch_size` or `group_size`:
 ```bash
@@ -446,9 +567,18 @@ export KERNELBENCH_ROOT=/workspace/kernel_dev/KernelBench
 2. Get a key from https://console.tinker.thinkingmachines.ai
 3. Check Tinker service status
 
+### Resume not working
+Ensure `checkpoints.jsonl` exists in the run directory:
+```bash
+cat ./runs/my_experiment/checkpoints.jsonl
+```
+If empty or missing, training crashed before the first checkpoint was saved.
+
 ## References
 
 - [Tinker Docs](https://tinker-docs.thinkingmachines.ai/)
 - [Tinker Cookbook](https://github.com/thinking-machines-lab/tinker-cookbook)
 - [KernelBench](https://github.com/ScalingIntelligence/KernelBench)
-- [Kevin-32B](https://cognition.ai/blog/kevin-32b) - Multi-turn kernel RL ideas
+- [Kevin-32B](https://cognition.ai/blog/kevin-32b) - Multi-turn kernel RL (Cognition)
+- [Kevin-32B Paper](https://arxiv.org/abs/2507.11948) - Details on thinking rewards and length penalties
+- [Demystifying Long CoT](https://arxiv.org/abs/2502.03373) - Length-scaling reward research
