@@ -195,8 +195,8 @@ class KernelBenchEnv(Env):
         )
         self._last_result = eval_result
 
-        # Compute reward
-        reward = compute_reward(eval_result, self.reward_config)
+        # Compute reward (includes thinking bonus)
+        reward = compute_reward(eval_result, self.reward_config, thought_length=len(parsed.thought))
 
         # Log the attempt
         logtree.log_text(f"Problem: Level {self.problem.level}, ID {self.problem.problem_id}")

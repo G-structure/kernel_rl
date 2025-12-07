@@ -521,8 +521,8 @@ class MultiTurnKernelBenchEnv(Env):
         )
         state.last_eval = eval_result
 
-        # Compute per-step score
-        step_score = compute_reward(eval_result, self.reward_config)
+        # Compute per-step score (includes thinking bonus)
+        step_score = compute_reward(eval_result, self.reward_config, thought_length=len(parsed.thought))
         state.step_scores.append(step_score)
 
         # Store in history (includes thought for logging, but thought is NOT fed to next turn)

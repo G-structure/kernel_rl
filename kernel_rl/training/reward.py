@@ -28,6 +28,7 @@ class RewardConfig:
     correctness_weight: float = 1.0  # Reward for passing tests
     speed_weight: float = 0.0  # Reward for speedup (disabled by default)
     length_weight: float = 0.05  # Reward for concise code (tie-breaking)
+    thinking_weight: float = 0.1  # Reward for using <think> blocks
 
     # Penalties
     cheating_penalty: float = -1.0  # Penalty for just wrapping PyTorch
@@ -41,6 +42,16 @@ class RewardConfig:
     # Length reward configuration (GRPO-LEAD style tie-breaking)
     length_max: int = 8000  # Code longer than this gets 0 length reward
     length_min: int = 500  # Code shorter than this gets max length reward
+
+    # Thinking reward configuration
+    # Based on Kevin paper: avoid harsh length penalties (caused response collapse)
+    # Instead: small bonus for using thinking, very gentle soft cap at extreme lengths
+    # Character counts (roughly 4 chars per token)
+    thinking_bonus: float = 1.0  # Bonus for having any thinking content
+    thinking_no_think: float = 0.5  # Reward when no thinking (neutral, not penalized)
+    thinking_soft_max: int = 2000  # Start gentle decay above this (chars)
+    thinking_hard_max: int = 4000  # Floor reward above this (chars)
+    thinking_floor: float = 0.7  # Floor reward for very long thinking (generous)
 
     # Whether to use sparse rewards (only reward fully correct solutions)
     sparse_rewards: bool = False
@@ -185,9 +196,59 @@ def length_reward(eval_result: "KernelEvalResult", config: RewardConfig) -> floa
         return 1.0 - (position / range_size)
 
 
+def thinking_reward(thought_length: int, config: RewardConfig) -> float:
+    """
+    Compute reward for using <think> blocks (encourages structured reasoning).
+
+    Based on Kevin paper findings: harsh length penalties cause response collapse.
+    This uses a generous reward curve that:
+    - Gives bonus for having any thinking content
+    - Doesn't penalize short thinking (some tasks are simple)
+    - Only gently caps extremely long thinking (context preservation)
+    - Never goes below a generous floor
+
+    Reward curve:
+    - No thinking (0 chars): thinking_no_think (0.5 default, neutral)
+    - Any thinking (1 to soft_max): thinking_bonus (1.0 default, full reward)
+    - Long thinking (soft_max to hard_max): linear decay to floor
+    - Very long thinking (> hard_max): thinking_floor (0.7 default, still positive)
+
+    Args:
+        thought_length: Length of thinking content in characters
+        config: Reward configuration
+
+    Returns:
+        Thinking reward in [thinking_floor, thinking_bonus]
+
+    References:
+        - Kevin-32B (arxiv:2507.11948): "Testing length penalties caused response
+          length to collapse within 10 training steps, degrading performance"
+        - Demystifying Long CoT (arxiv:2502.03373): Cosine length-scaling stabilizes
+          CoT growth without harsh penalties
+    """
+    if thought_length == 0:
+        # No thinking - neutral reward (don't penalize, some tasks don't need it)
+        return config.thinking_no_think
+
+    if thought_length <= config.thinking_soft_max:
+        # Good thinking length - full bonus
+        return config.thinking_bonus
+
+    if thought_length >= config.thinking_hard_max:
+        # Very long thinking - floor reward (still positive, generous)
+        return config.thinking_floor
+
+    # Linear decay between soft_max and hard_max
+    range_size = config.thinking_hard_max - config.thinking_soft_max
+    position = thought_length - config.thinking_soft_max
+    decay = (config.thinking_bonus - config.thinking_floor) * (position / range_size)
+    return config.thinking_bonus - decay
+
+
 def compute_reward(
     eval_result: "KernelEvalResult",
     config: RewardConfig | None = None,
+    thought_length: int = 0,
 ) -> float:
     """
     Compute the total reward for a kernel evaluation.
@@ -198,12 +259,14 @@ def compute_reward(
     - Correctness reward
     - Speed reward (optional)
     - Length reward (tie-breaking for uniform rewards)
+    - Thinking reward (encourages <think> block usage)
 
     With sparse_rewards=True, only fully correct solutions get reward.
 
     Args:
         eval_result: Result from kernel evaluation
         config: Reward configuration (uses defaults if None)
+        thought_length: Length of thinking content in characters (0 if no thinking)
 
     Returns:
         Total reward (scalar)
@@ -223,6 +286,10 @@ def compute_reward(
             if config.length_weight > 0:
                 l_reward = length_reward(eval_result, config)
                 base_reward += config.length_weight * l_reward
+            # Add thinking bonus
+            if config.thinking_weight > 0:
+                t_reward = thinking_reward(thought_length, config)
+                base_reward += config.thinking_weight * t_reward
             return base_reward
         return 0.0
 
@@ -232,6 +299,7 @@ def compute_reward(
     corr_reward = correctness_reward(eval_result, config)
     s_reward = speed_reward(eval_result, config, use_speed=config.speed_weight > 0)
     l_reward = length_reward(eval_result, config)
+    t_reward = thinking_reward(thought_length, config)
 
     total = (
         config.format_weight * f_reward
@@ -239,6 +307,7 @@ def compute_reward(
         + config.correctness_weight * corr_reward
         + config.speed_weight * s_reward
         + config.length_weight * l_reward
+        + config.thinking_weight * t_reward
     )
 
     return total
@@ -247,9 +316,15 @@ def compute_reward(
 def compute_reward_breakdown(
     eval_result: "KernelEvalResult",
     config: RewardConfig | None = None,
+    thought_length: int = 0,
 ) -> dict[str, float]:
     """
     Compute individual reward components for logging.
+
+    Args:
+        eval_result: Result from kernel evaluation
+        config: Reward configuration (uses defaults if None)
+        thought_length: Length of thinking content in characters
 
     Returns:
         Dictionary with individual reward values
@@ -263,7 +338,8 @@ def compute_reward_breakdown(
         "reward_correctness": correctness_reward(eval_result, config),
         "reward_speed": speed_reward(eval_result, config, use_speed=True),
         "reward_length": length_reward(eval_result, config),
-        "reward_total": compute_reward(eval_result, config),
+        "reward_thinking": thinking_reward(thought_length, config),
+        "reward_total": compute_reward(eval_result, config, thought_length),
     }
 
 
