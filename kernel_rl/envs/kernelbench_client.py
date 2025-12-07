@@ -106,9 +106,8 @@ def parse_structured_response(text: str) -> ParsedResponse:
     if not kernel:
         kernel = extract_code_block(text) or ""
 
-    # Last resort: if no code blocks found, use remaining text after stripping think
-    if not kernel and "class ModelNew" in text:
-        kernel = text
+    # No fallback - malformed responses should fail with format_ok=False
+    # This incentivizes models to use proper <KERNEL>```...```</KERNEL> format
 
     # Check if we got valid kernel code
     format_ok = bool(kernel) and ("class ModelNew" in kernel or "def forward" in kernel)

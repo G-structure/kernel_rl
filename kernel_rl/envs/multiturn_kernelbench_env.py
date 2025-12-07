@@ -273,6 +273,9 @@ class ModelNew(nn.Module):
 
 
 REFINEMENT_TEMPLATE = """
+## Previous Turn Summary (Model's Analysis)
+{previous_thinking}
+
 ## Previous Attempt (Turn {turn})
 
 ```python
@@ -291,8 +294,9 @@ REFINEMENT_TEMPLATE = """
 
 {guidance}
 
-Keep what works. Do not change the function signature unless necessary. Do not use PyTorch APIs for the core computation. Return only a single fenced code block with the corrected kernel.
+Keep what works. Do not change the function signature unless necessary. Do not use PyTorch APIs for the core computation.
 
+Remember: respond using <think>...</think> followed by <KERNEL>...</KERNEL>.
 """
 
 ERROR_SECTION_TEMPLATE = """### Error Details
@@ -433,8 +437,12 @@ class MultiTurnKernelBenchEnv(Env):
             if not guidance:
                 guidance = "Fix the issues in the previous attempt and try again."
 
+            # Get previous thinking summary (for context, not full CoT)
+            previous_thinking = self.state.last_thought or "(No analysis from previous turn)"
+
             refinement_text = REFINEMENT_TEMPLATE.format(
                 turn=self.state.turn_idx,
+                previous_thinking=previous_thinking,
                 previous_kernel=_truncate_kernel(self.state.last_kernel),
                 error_category=error_category_display,
                 compiled="Yes" if eval_result["compiled"] else "No",
