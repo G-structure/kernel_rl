@@ -212,14 +212,14 @@ async def do_group_rollout_with_envs(
     ])
 
     # Compute group rewards
-    group_rewards = await env_group_builder.compute_group_rewards(trajectories, envs)
+    rewards_and_metrics = await env_group_builder.compute_group_rewards(trajectories, envs)
+    rewards_G, metrics_G = zip(*rewards_and_metrics, strict=True)
 
-    # Create trajectory group
+    # Create trajectory group (positional args: trajectories_G, final_rewards_G, metrics_G)
     trajectory_group = TrajectoryGroup(
-        trajectories_G=trajectories,
-        group_rewards_G=[r for r, _ in group_rewards],
-        group_metrics_G=[m for _, m in group_rewards],
-        tags=env_group_builder.logging_tags(),
+        trajectories,
+        list(rewards_G),
+        list(metrics_G),
     )
 
     # Filter if all rewards are the same
