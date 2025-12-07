@@ -194,7 +194,7 @@ async def do_group_rollout_with_envs(
     Returns:
         Tuple of (TrajectoryGroup, env_group) or (None, None) if filtered out
     """
-    from tinker_cookbook.rl.rollouts import do_rollout
+    from tinker_cookbook.rl.rollouts import do_single_rollout
 
     policy = TinkerTokenCompleter(
         sampling_client,
@@ -207,7 +207,7 @@ async def do_group_rollout_with_envs(
 
     # Do rollouts for each env
     trajectories = await asyncio.gather(*[
-        do_rollout(env, policy)
+        do_single_rollout(policy, env)
         for env in envs
     ])
 
