@@ -206,10 +206,25 @@ async def do_group_rollout_with_envs(
     envs = await env_group_builder.make_envs()
 
     # Do rollouts for each env
-    trajectories = await asyncio.gather(*[
+    rollout_results = await asyncio.gather(*[
         do_single_rollout(policy, env)
         for env in envs
-    ])
+    ], return_exceptions=True)
+
+    # Filter out failed rollouts
+    trajectories = []
+    valid_envs = []
+    for traj, env in zip(rollout_results, envs):
+        if isinstance(traj, Exception):
+            logger.warning(f"Rollout failed: {traj}")
+        else:
+            trajectories.append(traj)
+            valid_envs.append(env)
+    envs = valid_envs
+
+    if not trajectories:
+        logger.warning("All rollouts in group failed")
+        return None, None
 
     # Compute group rewards
     rewards_and_metrics = await env_group_builder.compute_group_rewards(trajectories, envs)
@@ -678,12 +693,16 @@ async def run_training_loop(
                         do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     )
                     for builder in env_group_builders
-                ])
+                ], return_exceptions=True)
 
-            # Unpack and filter
+            # Unpack and filter (handle exceptions and None results)
             trajectory_groups = []
             env_groups = []
-            for tg, envs in results:
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.warning(f"Group rollout failed: {r}")
+                    continue
+                tg, envs = r
                 if tg is not None:
                     trajectory_groups.append(tg)
                     env_groups.append(envs)
@@ -707,7 +726,7 @@ async def run_training_loop(
         else:
             # Single-turn: original path
             with timed("rollout", metrics):
-                trajectory_groups = await asyncio.gather(*[
+                results = await asyncio.gather(*[
                     do_group_rollout_and_filter(
                         sampling_client,
                         builder,
@@ -716,10 +735,15 @@ async def run_training_loop(
                         do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     )
                     for builder in env_group_builders
-                ])
+                ], return_exceptions=True)
 
-            # Filter out None (removed constant reward groups)
-            trajectory_groups = [tg for tg in trajectory_groups if tg is not None]
+            # Filter out None (removed constant reward groups) and exceptions
+            trajectory_groups = []
+            for tg in results:
+                if isinstance(tg, Exception):
+                    logger.warning(f"Group rollout failed: {tg}")
+                elif tg is not None:
+                    trajectory_groups.append(tg)
 
             if len(trajectory_groups) == 0:
                 logger.warning(f"Batch {batch_idx}: All groups filtered out, skipping")

@@ -7,6 +7,7 @@ allowing direct evaluation of kernel code without going through the CLI scripts.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import re
@@ -136,18 +137,27 @@ def strip_thinking_tokens(text: str) -> str:
     return THINKING_PATTERN.sub("", text).strip()
 
 
-# Global retriever instance (lazy-loaded)
+# Global retriever instance (lazy-loaded with async lock for thread safety)
 _global_retriever: "KernelRetriever | None" = None
+_retriever_lock = asyncio.Lock()
 
 
-def get_global_retriever(index_path: str | None = None) -> "KernelRetriever | None":
-    """Get or load the global RAG retriever."""
+async def get_global_retriever(index_path: str | None = None) -> "KernelRetriever | None":
+    """Get or load the global RAG retriever (async, thread-safe)."""
     global _global_retriever
 
-    if _global_retriever is None and index_path:
-        from kernel_rl.rag.retriever import KernelRetriever
-        logger.info(f"Loading RAG index from {index_path}")
-        _global_retriever = KernelRetriever.load(index_path)
+    # Fast path: already loaded
+    if _global_retriever is not None:
+        return _global_retriever
+
+    # Slow path: need to load (protected by lock)
+    if index_path:
+        async with _retriever_lock:
+            # Double-check after acquiring lock
+            if _global_retriever is None:
+                from kernel_rl.rag.retriever import KernelRetriever
+                logger.info(f"Loading RAG index from {index_path}")
+                _global_retriever = KernelRetriever.load(index_path)
 
     return _global_retriever
 
@@ -156,6 +166,17 @@ def set_global_retriever(retriever: "KernelRetriever") -> None:
     """Set the global RAG retriever."""
     global _global_retriever
     _global_retriever = retriever
+
+
+def get_global_retriever_sync() -> "KernelRetriever | None":
+    """
+    Get the global RAG retriever synchronously.
+
+    This returns the cached retriever without attempting to load.
+    Use this in sync code paths where the retriever was already set
+    via set_global_retriever().
+    """
+    return _global_retriever
 
 
 class KernelEvalResult(TypedDict):
@@ -370,7 +391,7 @@ def get_raicl_prompt_for_code(
     Returns:
         RA-ICL prompt with retrieved examples
     """
-    retriever = get_global_retriever()
+    retriever = get_global_retriever_sync()
 
     if retriever is None:
         logger.warning("RAG retriever not loaded, falling back to one_shot")
@@ -614,7 +635,7 @@ class KernelBenchProblem:
     def get_raicl_system_prompt(self) -> str:
         """Get the RA-ICL system prompt for this backend."""
         from kernel_rl.rag.prompt_builder import RAICLPromptBuilder
-        retriever = get_global_retriever()
+        retriever = get_global_retriever_sync()
         if retriever is None:
             return ""
         builder = RAICLPromptBuilder(retriever)
