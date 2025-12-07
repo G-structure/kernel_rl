@@ -32,7 +32,7 @@ class KernelRetriever:
         examples = retriever.retrieve(pytorch_code, k=3, backend="triton")
     """
 
-    DEFAULT_MODEL = "microsoft/codebert-base"
+    DEFAULT_MODEL = "BAAI/bge-code-v1"
 
     def __init__(
         self,

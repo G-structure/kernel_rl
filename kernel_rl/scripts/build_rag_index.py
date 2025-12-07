@@ -38,7 +38,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="microsoft/codebert-base",
+        default="BAAI/bge-code-v1",
         help="Embedding model (sentence-transformers compatible)",
     )
     parser.add_argument(

@@ -121,10 +121,10 @@ dataset_builder:
 ### How It Works
 
 ```
-Query PyTorch Code → CodeBERT Embedding → FAISS Search → Top-K Examples → Inject into Prompt
+Query PyTorch Code → BGE-Code Embedding → FAISS Search → Top-K Examples → Inject into Prompt
 ```
 
-1. **Embedding**: PyTorch code is embedded using CodeBERT
+1. **Embedding**: PyTorch code is embedded using BGE-Code
 2. **Retrieval**: FAISS finds most similar examples from the corpus
 3. **Prompting**: Retrieved examples are injected as few-shot demonstrations
 4. **Generation**: Model generates kernel with relevant context
@@ -136,9 +136,15 @@ Query PyTorch Code → CodeBERT Embedding → FAISS Search → Top-K Examples �
 | `--output` | Output directory for index |
 | `--triton-only` | Only KernelBook (Triton) examples |
 | `--cuda-only` | Only Sakana (CUDA) examples |
-| `--model` | Embedding model (default: `microsoft/codebert-base`) |
+| `--model` | Embedding model (default: `BAAI/bge-code-v1`) |
 | `--sakana-levels` | Sakana levels to include (default: `1,2,3`) |
 | `--include-incorrect` | Include incorrect kernels from Sakana |
+
+**Recommended model:** For better code similarity matching, use `nomic-ai/nomic-embed-code`:
+
+```bash
+just build-rag-index --model nomic-ai/nomic-embed-code
+```
 
 ## Training
 
