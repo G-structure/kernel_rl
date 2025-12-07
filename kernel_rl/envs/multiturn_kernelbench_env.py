@@ -273,10 +273,7 @@ class ModelNew(nn.Module):
 
 
 REFINEMENT_TEMPLATE = """
-## Previous Turn Summary (Model's Analysis)
-{previous_thinking}
-
-## Previous Attempt (Turn {turn})
+{thinking_section}## Previous Attempt (Turn {turn})
 
 ```python
 {previous_kernel}
@@ -437,12 +434,14 @@ class MultiTurnKernelBenchEnv(Env):
             if not guidance:
                 guidance = "Fix the issues in the previous attempt and try again."
 
-            # Get previous thinking summary (for context, not full CoT)
-            previous_thinking = self.state.last_thought or "(No analysis from previous turn)"
+            # Build thinking section only if model provided analysis
+            thinking_section = ""
+            if self.state.last_thought:
+                thinking_section = f"## Previous Turn Summary (Model's Analysis)\n{self.state.last_thought}\n\n"
 
             refinement_text = REFINEMENT_TEMPLATE.format(
                 turn=self.state.turn_idx,
-                previous_thinking=previous_thinking,
+                thinking_section=thinking_section,
                 previous_kernel=_truncate_kernel(self.state.last_kernel),
                 error_category=error_category_display,
                 compiled="Yes" if eval_result["compiled"] else "No",
