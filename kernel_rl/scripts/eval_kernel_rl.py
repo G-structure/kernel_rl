@@ -35,6 +35,7 @@ from kernel_rl.envs.kernelbench_client import (
     KernelBenchProblem,
     evaluate_kernel,
     get_problem_ids,
+    parse_structured_response,
 )
 from kernel_rl.training.models import get_renderer_name_for_model
 
@@ -118,7 +119,13 @@ async def generate_kernel(
 
     # Parse response
     message, _ = renderer.parse_response(result.tokens)
-    return message.get("content", "")
+    content = message.get("content", "")
+
+    # Parse structured response (extracts <think> and <KERNEL> blocks)
+    parsed = parse_structured_response(content)
+
+    # Return just the kernel code (thought is discarded for evaluation)
+    return parsed.kernel if parsed.kernel else content
 
 
 async def evaluate_problem(

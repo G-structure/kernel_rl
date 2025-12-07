@@ -309,42 +309,111 @@ uv run python scripts/eval_from_generations.py \
 
 ```
 kernel_rl/
-├── env.py                     # Environment variable loading
+├── env.py                          # Environment variable loading
 ├── envs/
-│   ├── kernelbench_client.py  # KernelBench Python API wrapper
-│   └── kernelbench_env.py     # Tinker RL environment
-├── rag/                       # RA-ICL module
-│   ├── corpus.py              # KernelBook + Sakana loaders
-│   ├── retriever.py           # FAISS index + embeddings
-│   └── prompt_builder.py      # RA-ICL prompt construction
+│   ├── kernelbench_client.py       # KernelBench Python API wrapper
+│   ├── kernelbench_env.py          # Single-turn RL environment
+│   └── multiturn_kernelbench_env.py # Multi-turn RL environment (Kevin mode)
+├── rag/                            # RA-ICL module
+│   ├── corpus.py                   # KernelBook + Sakana loaders
+│   ├── retriever.py                # FAISS index + embeddings
+│   └── prompt_builder.py           # RA-ICL prompt construction
 ├── training/
-│   ├── models.py              # Model configuration
-│   ├── reward.py              # Reward shaping
-│   ├── loop.py                # GRPO training loop
-│   └── tensorboard_logger.py  # TensorBoard visualization
+│   ├── models.py                   # Model configuration
+│   ├── reward.py                   # Reward shaping + discounted returns
+│   ├── loop.py                     # GRPO training loop (single + multi-turn)
+│   └── tensorboard_logger.py       # TensorBoard visualization
 ├── evaluation/
-│   └── eval_kernelbench.py    # Evaluation utilities
+│   └── eval_kernelbench.py         # Evaluation utilities
 ├── scripts/
-│   ├── train_kernel_rl.py     # Training CLI
-│   ├── eval_kernel_rl.py      # Evaluation CLI
-│   └── build_rag_index.py     # RAG index builder
+│   ├── train_kernel_rl.py          # Training CLI
+│   ├── eval_kernel_rl.py           # Evaluation CLI
+│   └── build_rag_index.py          # RAG index builder
 └── config/
-    ├── rl_kernelbench.yaml       # Default config
-    └── rl_kernelbench_raicl.yaml # RA-ICL config
+    ├── rl_kernelbench.yaml         # Default config (single-turn)
+    ├── rl_kernelbench_raicl.yaml   # RA-ICL config (single-turn)
+    └── rl_kernelbench_kevin.yaml   # Kevin mode config (multi-turn)
 ```
 
+## Multi-Turn Training (Kevin Mode)
+
+This implementation includes **Kevin-style multi-turn refinement training**, inspired by [Cognition's Kevin-32B](https://cognition.ai/blog/kevin-32b).
+
+### How It Works
+
+Instead of generating one kernel per problem, the model gets **T refinement turns** (default T=4):
+
+1. **Turn 0**: Model sees problem + RA-ICL examples → generates first kernel
+2. **Turn 1+**: Model sees problem + previous kernel + error feedback → refines
+3. Continue until correct or max turns reached
+
+**Rewards use discounted returns** (Kevin paper):
+```
+R_t = s_t + γ*s_{t+1} + γ²*s_{t+2} + ... (γ = 0.4)
+```
+
+This encourages the model to generate kernels that are easy to fix in subsequent turns.
+
+### Quick Start
+
+```bash
+# Train with Kevin mode
+uv run python -m kernel_rl.scripts.train_kernel_rl \
+    --config kernel_rl/config/rl_kernelbench_kevin.yaml \
+    log_path=./runs/kevin_experiment
+
+# Or enable multi-turn on any config:
+uv run python -m kernel_rl.scripts.train_kernel_rl \
+    --config kernel_rl/config/rl_kernelbench_raicl.yaml \
+    mode=multi_turn \
+    max_turns=4 \
+    gamma=0.4 \
+    log_path=./runs/my_kevin_run
+```
+
+### Kevin Mode Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `mode` | `"single_turn"` or `"multi_turn"` | `"single_turn"` |
+| `max_turns` | Maximum refinement attempts | `4` |
+| `gamma` | Discount factor for future rewards | `0.4` |
+
+### Error Feedback
+
+On each refinement turn, the model receives:
+- **Error category**: COMPILATION ERROR, RUNTIME ERROR, CORRECTNESS ERROR, etc.
+- **Detailed error**: Extracted key error message (cleaned of traceback noise)
+- **Guidance**: Category-specific hints for fixing the error
+
+Example feedback:
+```
+## Evaluation Feedback
+- **Status**: COMPILATION ERROR - Build failed
+- **Compiled**: No
+- **Tests Passed**: 0/5
+
+### Error Details
+```
+AttributeError: module 'triton.language' has no attribute 'tanh'
+```
+
+## Instructions
+Fix the TRITON syntax/API errors. Check that all kernel functions are correctly decorated and all imports are valid.
+```
+
+### Kevin Mode Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `multiturn/success_rate` | Fraction of trajectories that solved the problem |
+| `multiturn/avg_turns` | Average turns used (lower = faster solving) |
+| `multiturn/compile_rate` | Compile success across all turns |
+| `multiturn/correct_rate` | Correctness across all turns |
+| `multiturn/max_correct_per_trajectory` | Best correctness achieved per trajectory |
+| `multiturn/turn_N/compile_rate` | Per-turn compile rates |
+
 ## Future Work
-
-This implementation is designed for extension:
-
-### Multi-turn Training (Kevin-style)
-The environment structure supports multi-turn episodes where:
-1. Model generates a kernel
-2. Receives compiler errors/logs
-3. Generates a patch
-4. Repeat until correct or max turns
-
-TODO markers in `kernelbench_env.py` indicate extension points.
 
 ### Multi-Agent Training
 The Tinker EnvGroupBuilder pattern supports:

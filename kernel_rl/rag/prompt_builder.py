@@ -27,6 +27,25 @@ Your solution must:
 - Be a drop-in replacement (same inputs/outputs as the original)
 - Use custom {backend} kernels, not just PyTorch operations
 - Be correct and produce the same results as the reference
+
+You MUST respond in exactly this format:
+
+<think>
+1-5 short bullet points describing:
+- What optimization strategy you will use (based on the examples)
+- Key implementation details (tiling, memory layout, etc.)
+- Any constraints or edge cases to handle
+
+Keep this section under 150 tokens.
+</think>
+
+<KERNEL>
+```python
+# Your complete optimized implementation here
+class ModelNew(nn.Module):
+    ...
+```
+</KERNEL>
 """
 
 
@@ -54,7 +73,9 @@ Optimize the following PyTorch model using custom {backend} kernels:
 {ref_code}
 ```
 
-Write your optimized implementation as a class named `ModelNew`. Output only the code in a code block, no explanations.
+Write your optimized implementation as a class named `ModelNew`.
+
+Remember to use the required format: <think>...</think> followed by <KERNEL>...</KERNEL>.
 """
 
 

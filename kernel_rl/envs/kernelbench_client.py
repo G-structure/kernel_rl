@@ -21,6 +21,122 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Regex patterns for parsing structured output (Kevin/Qwen3 style)
+# Thinking block patterns - supports <think>, <thinking>, <THOUGHT> variants
+THINKING_PATTERN = re.compile(
+    r"<(?:think|thinking|THOUGHT)>(.*?)</(?:think|thinking|THOUGHT)>",
+    re.DOTALL | re.IGNORECASE
+)
+
+# Kernel block pattern - code inside <KERNEL>...</KERNEL>
+KERNEL_BLOCK_PATTERN = re.compile(
+    r"<KERNEL>\s*```(?:cuda|python|cpp)?\s*\n?(.*?)```\s*</KERNEL>",
+    re.DOTALL | re.IGNORECASE
+)
+
+# Fallback: just <KERNEL>...</KERNEL> without fenced code block
+KERNEL_BLOCK_SIMPLE_PATTERN = re.compile(
+    r"<KERNEL>(.*?)</KERNEL>",
+    re.DOTALL | re.IGNORECASE
+)
+
+
+@dataclass
+class ParsedResponse:
+    """Parsed model response with thinking and kernel blocks."""
+    thought: str  # Content from <think>/<THOUGHT> block (may be empty)
+    kernel: str   # Kernel code (from <KERNEL> block or extracted code block)
+    raw: str      # Original raw response
+    format_ok: bool  # Whether we successfully extracted kernel code
+
+
+def parse_structured_response(text: str) -> ParsedResponse:
+    """
+    Parse model response with Kevin/Qwen3 structured format.
+
+    Expected format:
+        <think>
+        Brief reasoning about optimization approach...
+        </think>
+
+        <KERNEL>
+        ```cuda
+        // CUDA kernel code
+        ```
+        </KERNEL>
+
+    Also handles:
+    - <thinking>...</thinking> and <THOUGHT>...</THOUGHT> variants
+    - Missing thinking block (thought will be empty string)
+    - Missing <KERNEL> tags (falls back to extract_code_block)
+    - Plain code without any tags
+
+    Args:
+        text: Raw model output
+
+    Returns:
+        ParsedResponse with thought, kernel, raw text, and format_ok flag
+    """
+    raw = text
+    thought = ""
+    kernel = ""
+
+    # Extract thinking block (optional)
+    think_match = THINKING_PATTERN.search(text)
+    if think_match:
+        thought = think_match.group(1).strip()
+        # Remove thinking block from text for kernel extraction
+        text = THINKING_PATTERN.sub("", text).strip()
+
+    # Try to extract kernel from <KERNEL> block
+    kernel_match = KERNEL_BLOCK_PATTERN.search(text)
+    if kernel_match:
+        kernel = kernel_match.group(1).strip()
+    else:
+        # Try simple <KERNEL>...</KERNEL> without fenced code
+        kernel_match = KERNEL_BLOCK_SIMPLE_PATTERN.search(text)
+        if kernel_match:
+            kernel = kernel_match.group(1).strip()
+            # Try to extract code from within if it has fences
+            inner_code = extract_code_block(kernel)
+            if inner_code:
+                kernel = inner_code
+
+    # Fallback: no <KERNEL> tags, try generic code block extraction
+    if not kernel:
+        kernel = extract_code_block(text) or ""
+
+    # Last resort: if no code blocks found, use remaining text after stripping think
+    if not kernel and "class ModelNew" in text:
+        kernel = text
+
+    # Check if we got valid kernel code
+    format_ok = bool(kernel) and ("class ModelNew" in kernel or "def forward" in kernel)
+
+    return ParsedResponse(
+        thought=thought,
+        kernel=kernel,
+        raw=raw,
+        format_ok=format_ok,
+    )
+
+
+def strip_thinking_tokens(text: str) -> str:
+    """
+    Strip thinking/reasoning tokens from model output.
+
+    DEPRECATED: Use parse_structured_response() instead for proper handling.
+    This function is kept for backwards compatibility.
+
+    Args:
+        text: Raw model output text
+
+    Returns:
+        Text with thinking tokens removed
+    """
+    return THINKING_PATTERN.sub("", text).strip()
+
+
 # Global retriever instance (lazy-loaded)
 _global_retriever: "KernelRetriever | None" = None
 

@@ -6,6 +6,11 @@ from kernel_rl.training.reward import (
     compute_reward_breakdown,
     get_reward_config,
     REWARD_PRESETS,
+    # Multi-turn (Kevin mode)
+    MultiTurnRewardConfig,
+    compute_discounted_returns,
+    compute_trajectory_returns,
+    compute_multiturn_rewards,
 )
 from kernel_rl.training.models import (
     ModelConfig,
@@ -44,19 +49,28 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    # Single-turn rewards
     "RewardConfig",
     "compute_reward",
     "compute_reward_breakdown",
     "get_reward_config",
     "REWARD_PRESETS",
+    # Multi-turn rewards (Kevin mode)
+    "MultiTurnRewardConfig",
+    "compute_discounted_returns",
+    "compute_trajectory_returns",
+    "compute_multiturn_rewards",
+    # Models
     "ModelConfig",
     "RECOMMENDED_MODELS",
     "create_service_client",
     "create_training_client",
     "get_renderer_name_for_model",
     "get_tokenizer_for_model",
+    # Training loop
     "TrainingConfig",
     "run_training_loop",
+    # TensorBoard
     "TensorBoardConfig",
     "TensorBoardLogger",
     "create_tensorboard_logger",

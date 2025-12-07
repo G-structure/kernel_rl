@@ -34,9 +34,11 @@ from tinker_cookbook.utils import logtree
 from kernel_rl.envs.kernelbench_client import (
     KernelBenchProblem,
     KernelEvalResult,
+    ParsedResponse,
     evaluate_kernel,
     get_problem_ids,
     extract_code_block,
+    parse_structured_response,
     get_global_retriever,
     set_global_retriever,
 )
@@ -45,7 +47,7 @@ from kernel_rl.training.reward import compute_reward, RewardConfig
 logger = logging.getLogger(__name__)
 
 
-# Default system prompt for kernel generation
+# Default system prompt for kernel generation (structured format)
 DEFAULT_SYSTEM_PROMPT = """You are an expert GPU kernel developer. Your task is to optimize PyTorch operations by writing efficient custom GPU kernels.
 
 When given a PyTorch model, you should:
@@ -59,7 +61,24 @@ Your kernel should:
 - Handle edge cases properly
 - Use the specified backend (Triton, CUDA, etc.)
 
-Wrap your code in a markdown code block with the appropriate language tag."""
+You MUST respond in exactly this format:
+
+<think>
+1-5 short bullet points describing:
+- What optimization strategy you will use
+- Key implementation details (tiling, memory layout, etc.)
+- Any constraints or edge cases to handle
+
+Keep this section under 150 tokens.
+</think>
+
+<KERNEL>
+```python
+# Your complete optimized implementation here
+class ModelNew(nn.Module):
+    ...
+```
+</KERNEL>"""
 
 
 class KernelBenchEnv(Env):
@@ -152,13 +171,17 @@ class KernelBenchEnv(Env):
         message, parse_success = self.renderer.parse_response(action)
         response_text = message.get("content", "")
 
-        # Try to extract code from the response
-        extracted_code = extract_code_block(response_text)
-        kernel_code = extracted_code if extracted_code else response_text
+        # Parse structured response (extracts <think> and <KERNEL> blocks)
+        parsed = parse_structured_response(response_text)
+        kernel_code = parsed.kernel
         self._last_kernel = kernel_code
 
+        # Log thinking content if present (for debugging/analysis)
+        if parsed.thought:
+            logtree.log_text(f"Thought: {parsed.thought[:200]}...")
+
         # Check format validity
-        format_ok = bool(extracted_code) or "class ModelNew" in kernel_code
+        format_ok = parsed.format_ok
 
         # Evaluate the kernel
         eval_result = evaluate_kernel(
@@ -198,6 +221,8 @@ class KernelBenchEnv(Env):
             "tests_passed": eval_result["tests_passed"],
             "tests_total": eval_result["tests_total"],
             "cheated": float(eval_result["cheated"]),
+            "thought_length": len(parsed.thought),  # Track thinking token usage
+            "has_thought": float(bool(parsed.thought)),
         }
         if eval_result.get("speedup"):
             metrics["speedup"] = eval_result["speedup"]

@@ -14,8 +14,16 @@ from kernel_rl.envs.kernelbench_env import (
     KernelBenchEnvGroupBuilder,
     KernelBenchRLDataset,
 )
+from kernel_rl.envs.multiturn_kernelbench_env import (
+    MultiTurnKernelBenchDatasetBuilder,
+    MultiTurnKernelBenchEnv,
+    MultiTurnKernelBenchEnvGroupBuilder,
+    MultiTurnKernelBenchRLDataset,
+    MultiTurnState,
+)
 
 __all__ = [
+    # Single-turn
     "KernelBenchProblem",
     "KernelEvalResult",
     "evaluate_kernel",
@@ -26,4 +34,10 @@ __all__ = [
     "KernelBenchEnv",
     "KernelBenchEnvGroupBuilder",
     "KernelBenchRLDataset",
+    # Multi-turn (Kevin mode)
+    "MultiTurnKernelBenchDatasetBuilder",
+    "MultiTurnKernelBenchEnv",
+    "MultiTurnKernelBenchEnvGroupBuilder",
+    "MultiTurnKernelBenchRLDataset",
+    "MultiTurnState",
 ]

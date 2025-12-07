@@ -164,3 +164,28 @@ train-raicl run=run_name rag_index=rag_index_dir:
     @sleep 2
     @pgrep -f "log_path={{runs_dir}}/{{run}}" > /dev/null && echo "✓ Training started (PID: $$(pgrep -f 'log_path={{runs_dir}}/{{run}}'))" || echo "✗ Failed to start"
     @echo "Logs: {{runs_dir}}/{{run}}/logs.log"
+
+# === Kevin Mode (Multi-Turn) ===
+
+# Train with Kevin mode (multi-turn refinement, requires RAG index)
+train-kevin run=run_name rag_index=rag_index_dir:
+    @mkdir -p {{runs_dir}}
+    @if [ ! -d "{{rag_index}}" ]; then echo "Error: RAG index not found at {{rag_index}}. Run 'just build-rag-index' first."; exit 1; fi
+    @echo "Starting Kevin mode training: {{run}}"
+    @echo "  Mode: multi_turn"
+    @echo "  Max turns: 4"
+    @echo "  Gamma: 0.4"
+    nohup uv run python -m kernel_rl.scripts.train_kernel_rl \
+        --config kernel_rl/config/rl_kernelbench_kevin.yaml \
+        log_path={{runs_dir}}/{{run}} \
+        dataset_builder.rag_index_path={{rag_index}} \
+        > {{runs_dir}}/{{run}}_nohup.log 2>&1 &
+    @sleep 2
+    @pgrep -f "log_path={{runs_dir}}/{{run}}" > /dev/null && echo "✓ Training started (PID: $$(pgrep -f 'log_path={{runs_dir}}/{{run}}'))" || echo "✗ Failed to start"
+    @echo "Logs: {{runs_dir}}/{{run}}/logs.log"
+
+# Watch Kevin mode metrics (multi-turn specific)
+watch-kevin run:
+    watch -n 10 'echo "=== {{run}} (Kevin Mode) ===" && \
+        wc -l < {{runs_dir}}/{{run}}/metrics.jsonl | xargs -I {} echo "Batches: {}" && \
+        tail -1 {{runs_dir}}/{{run}}/metrics.jsonl 2>/dev/null | uv run python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(f\"Latest: step_score={d.get(\"multiturn/step_score_mean\",0):.3f}, compile={d.get(\"multiturn/compile_rate\",0)*100:.1f}%, correct={d.get(\"multiturn/correct_rate\",0)*100:.1f}%, success={d.get(\"multiturn/success_rate\",0)*100:.1f}%, avg_turns={d.get(\"multiturn/avg_turns\",0):.1f}\")" 2>/dev/null || echo "No metrics yet"'

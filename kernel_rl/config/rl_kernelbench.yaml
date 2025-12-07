@@ -1,8 +1,8 @@
 # KernelBench RL Training Configuration
 # =====================================
 #
-# This is a template configuration file for training models on KernelBench.
-# Copy and modify for your experiments.
+# Default configuration: Kevin mode (multi-turn) + RA-ICL
+# This combines retrieval-augmented prompts with multi-turn refinement.
 #
 # Usage:
 #   python -m kernel_rl.scripts.train_kernel_rl \
@@ -19,6 +19,15 @@ learning_rate: 0.0001
 # ------------------------
 max_tokens: 4096
 temperature: 1.0
+
+# Training Mode
+# -------------
+mode: "multi_turn"  # Kevin-style multi-turn refinement (default)
+
+# Multi-Turn Configuration (Kevin Mode)
+# --------------------------------------
+max_turns: 4        # Maximum refinement attempts per problem
+gamma: 0.4          # Discount factor for future rewards
 
 # Training Configuration
 # ----------------------
@@ -53,8 +62,9 @@ dataset_builder:
   dataset_src: "huggingface"
 
   # Training configuration
-  batch_size: 4      # Problems per batch
-  group_size: 8      # Rollouts per problem (increased for better reward variance)
+  # Note: For multi-turn, effective samples = batch_size * group_size * max_turns
+  batch_size: 2      # Reduced for multi-turn overhead
+  group_size: 4      # Rollouts per problem
   num_epochs: 1
   shuffle: true
 
@@ -62,7 +72,7 @@ dataset_builder:
   num_correct_trials: 5
   measure_performance: false  # Set true for speed rewards
 
-  # Reward configuration
+  # Reward configuration (per-step scores, converted to discounted returns)
   reward_format_weight: 0.1
   reward_compile_weight: 0.2
   reward_correctness_weight: 1.0
@@ -75,9 +85,7 @@ dataset_builder:
   # Renderer (should match model)
   renderer_name: "qwen3"
 
-  # Prompt configuration
-  # Options: "zero_shot", "one_shot", "few_shot", "raicl"
-  # For "raicl", you must also set rag_index_path (see rl_kernelbench_raicl.yaml)
-  prompt_option: "one_shot"
-  # rag_index_path: "./kernel_rag_index"  # Uncomment for raicl
-  # raicl_k: 3  # Number of examples to retrieve
+  # RA-ICL Configuration (retrieval-augmented prompts)
+  prompt_option: "raicl"
+  rag_index_path: "./kernel_rag_index"
+  raicl_k: 3  # Number of examples to retrieve

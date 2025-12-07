@@ -1,0 +1,104 @@
+# KernelBench RL Training - Kevin Mode (Multi-Turn)
+# ==================================================
+#
+# This configuration enables multi-turn refinement training, inspired by
+# Cognition's Kevin-32B approach. The model gets multiple attempts to fix
+# its kernel, with feedback from compilation/runtime errors after each turn.
+#
+# Key differences from single-turn:
+#   - Multiple refinement turns per problem (default: 4)
+#   - Discounted returns: R_t = s_t + gamma*s_{t+1} + gamma^2*s_{t+2} + ...
+#   - Per-turn feedback includes error messages and guidance
+#   - Metrics track per-turn and per-trajectory success rates
+#
+# Prerequisites:
+#   1. Build the RAG index (recommended for better initial attempts):
+#      python -m kernel_rl.scripts.build_rag_index --output ./kernel_rag_index
+#
+# Usage:
+#   python -m kernel_rl.scripts.train_kernel_rl \
+#       --config kernel_rl/config/rl_kernelbench_kevin.yaml \
+#       log_path=./runs/kevin_experiment
+
+# Model Configuration
+# -------------------
+model_name: "Qwen/Qwen3-30B-A3B"
+lora_rank: 32
+learning_rate: 0.0001
+
+# Generation Configuration
+# ------------------------
+max_tokens: 4096
+temperature: 1.0
+
+# Training Mode
+# -------------
+mode: "multi_turn"  # Enable Kevin-style multi-turn refinement
+
+# Multi-Turn Configuration (Kevin Mode)
+# --------------------------------------
+max_turns: 4        # Maximum refinement attempts per problem (T in Kevin paper)
+gamma: 0.4          # Discount factor for future rewards (from Kevin paper)
+
+# Training Configuration
+# ----------------------
+num_substeps: 1
+loss_fn: "importance_sampling"
+
+# KL Regularization (optional)
+kl_penalty_coef: 0.0
+kl_discount_factor: 0.0
+
+# Remove groups with constant rewards (no learning signal)
+remove_constant_reward_groups: true
+
+# Logging and Checkpointing
+# -------------------------
+log_path: "./runs/kernel_rl_kevin"
+save_every: 10
+eval_every: 10
+
+# Weights & Biases (optional)
+wandb_project: null
+wandb_name: null
+
+# Dataset Configuration with RA-ICL
+# ----------------------------------
+dataset_builder:
+  # Problem selection
+  level: 1
+  start_problem: null
+  end_problem: null
+  backend: "triton"
+  dataset_src: "huggingface"
+
+  # Training configuration
+  # Note: For multi-turn, effective samples per batch = batch_size * group_size * max_turns
+  batch_size: 2       # Reduced batch size due to multi-turn overhead
+  group_size: 4       # Rollouts per problem
+  num_epochs: 1
+  shuffle: true
+
+  # Evaluation configuration
+  num_correct_trials: 5
+  measure_performance: false  # Enable for speed rewards in later training
+
+  # Reward configuration
+  # These define the per-step score s_t, which gets converted to discounted R_t
+  reward_format_weight: 0.1
+  reward_compile_weight: 0.2
+  reward_correctness_weight: 1.0
+  reward_speed_weight: 0.0     # Enable for stage 3 training
+  reward_length_weight: 0.05
+
+  # Test split
+  test_fraction: 0.1
+
+  # Renderer (should match model)
+  renderer_name: "qwen3"
+
+  # RA-ICL Configuration (highly recommended for multi-turn)
+  # Provides good initial examples to reduce wasted turns
+  prompt_option: "raicl"
+  rag_index_path: "./kernel_rag_index"
+  raicl_k: 3
