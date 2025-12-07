@@ -780,6 +780,7 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
     reward_correctness_weight: float = 1.0
     reward_speed_weight: float = 0.0
     reward_length_weight: float = 0.05
+    reward_thinking_weight: float = 0.1  # Reward for using <think> blocks
 
     # Renderer
     renderer_name: str = "qwen3"
@@ -844,6 +845,7 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
             correctness_weight=self.reward_correctness_weight,
             speed_weight=self.reward_speed_weight,
             length_weight=self.reward_length_weight,
+            thinking_weight=self.reward_thinking_weight,
         )
 
         # Create train dataset

@@ -139,7 +139,15 @@ def strip_thinking_tokens(text: str) -> str:
 
 # Global retriever instance (lazy-loaded with async lock for thread safety)
 _global_retriever: "KernelRetriever | None" = None
-_retriever_lock = asyncio.Lock()
+_retriever_lock: asyncio.Lock | None = None  # Lazily initialized to avoid "no running event loop"
+
+
+def _get_retriever_lock() -> asyncio.Lock:
+    """Get or create the retriever lock (must be called from async context)."""
+    global _retriever_lock
+    if _retriever_lock is None:
+        _retriever_lock = asyncio.Lock()
+    return _retriever_lock
 
 
 async def get_global_retriever(index_path: str | None = None) -> "KernelRetriever | None":
@@ -152,7 +160,8 @@ async def get_global_retriever(index_path: str | None = None) -> "KernelRetrieve
 
     # Slow path: need to load (protected by lock)
     if index_path:
-        async with _retriever_lock:
+        lock = _get_retriever_lock()
+        async with lock:
             # Double-check after acquiring lock
             if _global_retriever is None:
                 from kernel_rl.rag.retriever import KernelRetriever
