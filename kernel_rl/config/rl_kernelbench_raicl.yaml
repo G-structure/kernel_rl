@@ -1,13 +1,17 @@
-# KernelBench RL Training Configuration
-# =====================================
+# KernelBench RL Training with RA-ICL
+# ====================================
 #
-# This is a template configuration file for training models on KernelBench.
-# Copy and modify for your experiments.
+# This configuration uses Retrieval-Augmented In-Context Learning (RA-ICL)
+# to provide relevant examples from KernelBook and AI-CUDA-Engineer corpora.
+#
+# Prerequisites:
+#   1. Build the RAG index:
+#      python -m kernel_rl.scripts.build_rag_index --output ./kernel_rag_index
 #
 # Usage:
 #   python -m kernel_rl.scripts.train_kernel_rl \
-#       --config kernel_rl/config/rl_kernelbench.yaml \
-#       log_path=./runs/my_experiment
+#       --config kernel_rl/config/rl_kernelbench_raicl.yaml \
+#       log_path=./runs/raicl_experiment
 
 # Model Configuration
 # -------------------
@@ -34,7 +38,7 @@ remove_constant_reward_groups: true
 
 # Logging and Checkpointing
 # -------------------------
-log_path: "./runs/kernel_rl"
+log_path: "./runs/kernel_rl_raicl"
 save_every: 10
 eval_every: 10
 
@@ -42,32 +46,32 @@ eval_every: 10
 wandb_project: null
 wandb_name: null
 
-# Dataset Configuration
-# ---------------------
+# Dataset Configuration with RA-ICL
+# ----------------------------------
 dataset_builder:
   # Problem selection
   level: 1
-  start_problem: null  # null = start from beginning
-  end_problem: null    # null = use all problems
+  start_problem: null
+  end_problem: null
   backend: "triton"
   dataset_src: "huggingface"
 
   # Training configuration
-  batch_size: 4      # Problems per batch
-  group_size: 8      # Rollouts per problem (increased for better reward variance)
+  batch_size: 4
+  group_size: 8
   num_epochs: 1
   shuffle: true
 
   # Evaluation configuration
   num_correct_trials: 5
-  measure_performance: false  # Set true for speed rewards
+  measure_performance: false
 
   # Reward configuration
   reward_format_weight: 0.1
   reward_compile_weight: 0.2
   reward_correctness_weight: 1.0
-  reward_speed_weight: 0.0  # Enable for stage 3 training
-  reward_length_weight: 0.05  # Tie-breaking for uniform rewards (GRPO-LEAD style)
+  reward_speed_weight: 0.0
+  reward_length_weight: 0.05
 
   # Test split
   test_fraction: 0.1
@@ -75,9 +79,8 @@ dataset_builder:
   # Renderer (should match model)
   renderer_name: "qwen3"
 
-  # Prompt configuration
-  # Options: "zero_shot", "one_shot", "few_shot", "raicl"
-  # For "raicl", you must also set rag_index_path (see rl_kernelbench_raicl.yaml)
-  prompt_option: "one_shot"
-  # rag_index_path: "./kernel_rag_index"  # Uncomment for raicl
-  # raicl_k: 3  # Number of examples to retrieve
+  # RA-ICL Configuration
+  # --------------------
+  prompt_option: "raicl"              # Use retrieval-augmented prompts
+  rag_index_path: "./kernel_rag_index"  # Path to pre-built RAG index
+  raicl_k: 3                          # Number of retrieved examples per prompt

@@ -11,12 +11,36 @@ import os
 import sys
 import re
 from dataclasses import dataclass, field
-from typing import TypedDict, Optional, Any
+from typing import TypedDict, Optional, Any, TYPE_CHECKING
 import logging
 
 import torch
 
+if TYPE_CHECKING:
+    from kernel_rl.rag.retriever import KernelRetriever
+
 logger = logging.getLogger(__name__)
+
+# Global retriever instance (lazy-loaded)
+_global_retriever: "KernelRetriever | None" = None
+
+
+def get_global_retriever(index_path: str | None = None) -> "KernelRetriever | None":
+    """Get or load the global RAG retriever."""
+    global _global_retriever
+
+    if _global_retriever is None and index_path:
+        from kernel_rl.rag.retriever import KernelRetriever
+        logger.info(f"Loading RAG index from {index_path}")
+        _global_retriever = KernelRetriever.load(index_path)
+
+    return _global_retriever
+
+
+def set_global_retriever(retriever: "KernelRetriever") -> None:
+    """Set the global RAG retriever."""
+    global _global_retriever
+    _global_retriever = retriever
 
 
 class KernelEvalResult(TypedDict):
@@ -178,6 +202,7 @@ def get_prompt_for_problem(
     backend: str = "triton",
     option: str = "one_shot",
     dataset_src: str = "huggingface",
+    raicl_k: int = 3,
 ) -> str:
     """
     Get the prompt for a KernelBench problem.
@@ -186,8 +211,9 @@ def get_prompt_for_problem(
         level: KernelBench level (1, 2, 3, or 4)
         problem_id: Problem ID within the level
         backend: Backend type ("cuda", "triton", "cute", "tilelang")
-        option: Prompt option ("zero_shot", "one_shot", "few_shot")
+        option: Prompt option ("zero_shot", "one_shot", "few_shot", "raicl")
         dataset_src: Either "huggingface" or "local"
+        raicl_k: Number of examples to retrieve for RA-ICL
 
     Returns:
         The prompt string for the model
@@ -195,6 +221,10 @@ def get_prompt_for_problem(
     _ensure_kernelbench_imported()
 
     ref_code = get_reference_code(level, problem_id, dataset_src)
+
+    # Handle RA-ICL option
+    if option == "raicl":
+        return get_raicl_prompt_for_code(ref_code, backend, k=raicl_k)
 
     from src.prompt_constructor_toml import get_prompt_for_backend
 
@@ -207,6 +237,41 @@ def get_prompt_for_problem(
     )
 
     return prompt
+
+
+def get_raicl_prompt_for_code(
+    ref_code: str,
+    backend: str,
+    k: int = 3,
+) -> str:
+    """
+    Get RA-ICL prompt for given reference code.
+
+    Args:
+        ref_code: Reference PyTorch code
+        backend: Target backend ("triton" or "cuda")
+        k: Number of examples to retrieve
+
+    Returns:
+        RA-ICL prompt with retrieved examples
+    """
+    retriever = get_global_retriever()
+
+    if retriever is None:
+        logger.warning("RAG retriever not loaded, falling back to one_shot")
+        from src.prompt_constructor_toml import get_prompt_for_backend
+        return get_prompt_for_backend(
+            ref_code,
+            backend,
+            option="one_shot",
+            precision="fp32",
+            include_hardware=False,
+        )
+
+    from kernel_rl.rag.prompt_builder import RAICLPromptBuilder
+
+    builder = RAICLPromptBuilder(retriever)
+    return builder.build_prompt(ref_code, backend, k=k)
 
 
 def evaluate_kernel(
@@ -402,6 +467,8 @@ class KernelBenchProblem:
     problem_id: int
     backend: str = "triton"
     dataset_src: str = "huggingface"
+    prompt_option: str = "one_shot"  # "zero_shot", "one_shot", "few_shot", "raicl"
+    raicl_k: int = 3  # Number of examples for RA-ICL
 
     _ref_code: str | None = field(default=None, repr=False)
     _prompt: str | None = field(default=None, repr=False)
@@ -423,10 +490,20 @@ class KernelBenchProblem:
                 self.level,
                 self.problem_id,
                 self.backend,
-                option="one_shot",
+                option=self.prompt_option,
                 dataset_src=self.dataset_src,
+                raicl_k=self.raicl_k,
             )
         return self._prompt
+
+    def get_raicl_system_prompt(self) -> str:
+        """Get the RA-ICL system prompt for this backend."""
+        from kernel_rl.rag.prompt_builder import RAICLPromptBuilder
+        retriever = get_global_retriever()
+        if retriever is None:
+            return ""
+        builder = RAICLPromptBuilder(retriever)
+        return builder.build_system_prompt(self.backend)
 
     def evaluate(
         self,

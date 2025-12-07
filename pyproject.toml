@@ -42,6 +42,9 @@ dependencies = [
     "hf-transfer>=0.1.9",
     # Visualization
     "tensorboard>=2.15.0",
+    # RAG dependencies
+    "faiss-cpu>=1.7.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +72,7 @@ src = { path = "../KernelBench", editable = true }
 [project.scripts]
 train-kernel-rl = "kernel_rl.scripts.train_kernel_rl:main"
 eval-kernel-rl = "kernel_rl.scripts.eval_kernel_rl:main"
+build-rag-index = "kernel_rl.scripts.build_rag_index:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

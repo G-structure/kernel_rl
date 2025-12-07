@@ -68,6 +68,78 @@ TINKER_API_KEY=your-api-key-here
 
 The `.env` file is automatically loaded when running scripts.
 
+## RA-ICL (Retrieval-Augmented In-Context Learning)
+
+This project supports **RA-ICL** prompting, which retrieves similar kernel examples from large corpora to provide relevant in-context examples for each problem.
+
+### Data Sources
+
+| Dataset | Size | Backend | Description |
+|---------|------|---------|-------------|
+| [KernelBook](https://huggingface.co/datasets/GPUMODE/KernelBook) | 18.2K | Triton | PyTorch → Triton via Inductor |
+| [AI-CUDA-Engineer](https://huggingface.co/datasets/SakanaAI/AI-CUDA-Engineer-Archive) | 30.6K | CUDA | Sakana AI's CUDA kernel archive |
+
+### Quick Start
+
+```bash
+# 1. Build the RAG index (one-time, ~10 min)
+just build-rag-index
+
+# 2. Train with RA-ICL prompts
+just train-raicl run=my_raicl_run
+```
+
+### Manual Commands
+
+```bash
+# Build index (both datasets)
+uv run python -m kernel_rl.scripts.build_rag_index --output ./kernel_rag_index
+
+# Build Triton-only index (KernelBook)
+uv run python -m kernel_rl.scripts.build_rag_index --output ./kernel_rag_index --triton-only
+
+# Build CUDA-only index (Sakana)
+uv run python -m kernel_rl.scripts.build_rag_index --output ./kernel_rag_index --cuda-only
+
+# Train with RA-ICL
+uv run python -m kernel_rl.scripts.train_kernel_rl \
+    --config kernel_rl/config/rl_kernelbench_raicl.yaml \
+    log_path=./runs/raicl_experiment
+```
+
+### Configuration
+
+Add these options to your config:
+
+```yaml
+dataset_builder:
+  prompt_option: "raicl"              # Enable RA-ICL
+  rag_index_path: "./kernel_rag_index"  # Path to index
+  raicl_k: 3                          # Examples per prompt
+```
+
+### How It Works
+
+```
+Query PyTorch Code → CodeBERT Embedding → FAISS Search → Top-K Examples → Inject into Prompt
+```
+
+1. **Embedding**: PyTorch code is embedded using CodeBERT
+2. **Retrieval**: FAISS finds most similar examples from the corpus
+3. **Prompting**: Retrieved examples are injected as few-shot demonstrations
+4. **Generation**: Model generates kernel with relevant context
+
+### Index Build Options
+
+| Option | Description |
+|--------|-------------|
+| `--output` | Output directory for index |
+| `--triton-only` | Only KernelBook (Triton) examples |
+| `--cuda-only` | Only Sakana (CUDA) examples |
+| `--model` | Embedding model (default: `microsoft/codebert-base`) |
+| `--sakana-levels` | Sakana levels to include (default: `1,2,3`) |
+| `--include-incorrect` | Include incorrect kernels from Sakana |
+
 ## Training
 
 ### Basic Training Run
@@ -235,6 +307,10 @@ kernel_rl/
 ├── envs/
 │   ├── kernelbench_client.py  # KernelBench Python API wrapper
 │   └── kernelbench_env.py     # Tinker RL environment
+├── rag/                       # RA-ICL module
+│   ├── corpus.py              # KernelBook + Sakana loaders
+│   ├── retriever.py           # FAISS index + embeddings
+│   └── prompt_builder.py      # RA-ICL prompt construction
 ├── training/
 │   ├── models.py              # Model configuration
 │   ├── reward.py              # Reward shaping
@@ -244,9 +320,11 @@ kernel_rl/
 │   └── eval_kernelbench.py    # Evaluation utilities
 ├── scripts/
 │   ├── train_kernel_rl.py     # Training CLI
-│   └── eval_kernel_rl.py      # Evaluation CLI
+│   ├── eval_kernel_rl.py      # Evaluation CLI
+│   └── build_rag_index.py     # RAG index builder
 └── config/
-    └── rl_kernelbench.yaml    # Default config
+    ├── rl_kernelbench.yaml       # Default config
+    └── rl_kernelbench_raicl.yaml # RA-ICL config
 ```
 
 ## Future Work

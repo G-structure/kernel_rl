@@ -37,6 +37,8 @@ from kernel_rl.envs.kernelbench_client import (
     evaluate_kernel,
     get_problem_ids,
     extract_code_block,
+    get_global_retriever,
+    set_global_retriever,
 )
 from kernel_rl.training.reward import compute_reward, RewardConfig
 
@@ -397,12 +399,26 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
     # Test split
     test_fraction: float = 0.1
 
+    # Prompt configuration
+    prompt_option: str = "one_shot"  # "zero_shot", "one_shot", "few_shot", "raicl"
+    rag_index_path: str | None = None  # Path to RAG index (required for raicl)
+    raicl_k: int = 3  # Number of examples to retrieve for RA-ICL
+
     async def __call__(self, tokenizer=None) -> tuple[RLDataset, RLDataset | None]:
         """Build train and optional test datasets.
 
         Args:
             tokenizer: The tokenizer to use for the renderer. Required for most renderers.
         """
+        # Load RAG index if using raicl prompts
+        if self.prompt_option == "raicl":
+            if not self.rag_index_path:
+                raise ValueError("rag_index_path is required when using raicl prompt_option")
+            from kernel_rl.rag.retriever import KernelRetriever
+            retriever = KernelRetriever.load(self.rag_index_path)
+            set_global_retriever(retriever)
+            logger.info(f"Loaded RAG index from {self.rag_index_path}")
+
         # Get problem IDs
         problem_ids = get_problem_ids(
             self.level,
@@ -418,6 +434,8 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
                 problem_id=pid,
                 backend=self.backend,
                 dataset_src=self.dataset_src,
+                prompt_option=self.prompt_option,
+                raicl_k=self.raicl_k,
             )
             for pid in problem_ids
         ]
