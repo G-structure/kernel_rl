@@ -591,6 +591,254 @@ def evaluate_kernel(
         return default_result
 
 
+async def evaluate_kernel_async(
+    level: int,
+    problem_id: int,
+    backend: str,
+    kernel_code: str,
+    dataset_src: str = "huggingface",
+    num_correct_trials: int = 5,
+    measure_performance: bool = False,
+    num_perf_trials: int = 100,
+    timeout: float = 180.0,
+) -> KernelEvalResult:
+    """
+    Evaluate a generated kernel using Modal for isolated GPU execution.
+
+    This function provides:
+    - Hard timeout enforcement (kills bad kernels after timeout)
+    - Process isolation (each kernel runs in separate container)
+    - Protection against GPU corruption from bad kernels
+
+    Args:
+        level: KernelBench level (1, 2, 3, or 4)
+        problem_id: Problem ID within the level
+        backend: Backend type ("cuda", "triton", "cute", "tilelang")
+        kernel_code: The generated kernel source code
+        dataset_src: Either "huggingface" or "local"
+        num_correct_trials: Number of correctness trials to run
+        measure_performance: Whether to measure runtime performance
+        num_perf_trials: Number of performance trials to run
+        timeout: Timeout in seconds for evaluation (enforced by Modal)
+
+    Returns:
+        KernelEvalResult with evaluation results
+    """
+    from kernel_rl.modal.evaluator import (
+        ModalEvaluatorConfig,
+        get_modal_evaluator,
+    )
+
+    # Default result for failures
+    default_result: KernelEvalResult = {
+        "format_ok": False,
+        "compiled": False,
+        "correctness": False,
+        "tests_passed": 0,
+        "tests_total": num_correct_trials,
+        "speedup": None,
+        "runtime_ms": None,
+        "baseline_runtime_ms": None,
+        "cheated": False,
+        "error_message": None,
+        "code_length": len(kernel_code),
+        "metadata": {},
+    }
+
+    # Check format - try to extract code if it's wrapped in markdown
+    extracted_code = extract_code_block(kernel_code)
+    if extracted_code is not None:
+        kernel_code = extracted_code
+        default_result["format_ok"] = True
+        default_result["code_length"] = len(kernel_code)
+    elif "class ModelNew" in kernel_code:
+        default_result["format_ok"] = True
+    else:
+        default_result["error_message"] = "Could not extract valid kernel code from response"
+        return default_result
+
+    # Check for cheating
+    cheated = check_for_cheating(kernel_code)
+    default_result["cheated"] = cheated
+
+    # If cheated, return early with zero reward
+    if cheated:
+        default_result["error_message"] = "Kernel detected as cheating (uses PyTorch ops directly)"
+        return default_result
+
+    # Get reference code
+    try:
+        ref_code = get_reference_code(level, problem_id, dataset_src)
+    except Exception as e:
+        default_result["error_message"] = f"Failed to load reference code: {e}"
+        return default_result
+
+    # Get Modal evaluator with configured timeout
+    config = ModalEvaluatorConfig(timeout=int(timeout))
+    evaluator = get_modal_evaluator(config)
+
+    # Run evaluation on Modal
+    try:
+        result = await evaluator.evaluate_single(
+            ref_code=ref_code,
+            kernel_code=kernel_code,
+            backend=backend,
+            num_correct_trials=num_correct_trials,
+            measure_performance=measure_performance,
+            num_perf_trials=num_perf_trials,
+            precision="fp32",
+        )
+
+        # Add cheating flag (checked locally, not on Modal)
+        result["cheated"] = cheated
+
+        return result
+
+    except Exception as e:
+        default_result["error_message"] = f"Modal evaluation failed: {e}"
+        logger.exception("Modal kernel evaluation failed")
+        return default_result
+
+
+async def evaluate_kernel_batch_async(
+    evaluations: list[dict],
+    timeout: float = 180.0,
+) -> list[KernelEvalResult]:
+    """
+    Evaluate multiple kernels in parallel using Modal.
+
+    This function runs all kernel evaluations in parallel across
+    Modal's GPU pool for maximum throughput.
+
+    Args:
+        evaluations: List of dicts with keys:
+            - level: int
+            - problem_id: int
+            - backend: str
+            - kernel_code: str
+            - dataset_src: str (optional)
+            - num_correct_trials: int (optional)
+            - measure_performance: bool (optional)
+            - num_perf_trials: int (optional)
+        timeout: Timeout in seconds per evaluation
+
+    Returns:
+        List of KernelEvalResult dicts in same order as input
+    """
+    from kernel_rl.modal.evaluator import (
+        ModalEvaluatorConfig,
+        get_modal_evaluator,
+    )
+
+    if not evaluations:
+        return []
+
+    # Prepare evaluations with ref_code
+    prepared = []
+    results = []
+
+    for i, e in enumerate(evaluations):
+        kernel_code = e["kernel_code"]
+
+        # Create default result
+        default_result: KernelEvalResult = {
+            "format_ok": False,
+            "compiled": False,
+            "correctness": False,
+            "tests_passed": 0,
+            "tests_total": e.get("num_correct_trials", 5),
+            "speedup": None,
+            "runtime_ms": None,
+            "baseline_runtime_ms": None,
+            "cheated": False,
+            "error_message": None,
+            "code_length": len(kernel_code),
+            "metadata": {},
+        }
+
+        # Check format
+        extracted_code = extract_code_block(kernel_code)
+        if extracted_code is not None:
+            kernel_code = extracted_code
+            default_result["format_ok"] = True
+            default_result["code_length"] = len(kernel_code)
+        elif "class ModelNew" in kernel_code:
+            default_result["format_ok"] = True
+        else:
+            default_result["error_message"] = "Could not extract valid kernel code"
+            results.append((i, default_result, None))
+            continue
+
+        # Check for cheating
+        cheated = check_for_cheating(kernel_code)
+        default_result["cheated"] = cheated
+
+        if cheated:
+            default_result["error_message"] = "Kernel detected as cheating"
+            results.append((i, default_result, None))
+            continue
+
+        # Get reference code
+        try:
+            ref_code = get_reference_code(
+                e["level"],
+                e["problem_id"],
+                e.get("dataset_src", "huggingface"),
+            )
+        except Exception as ex:
+            default_result["error_message"] = f"Failed to load reference: {ex}"
+            results.append((i, default_result, None))
+            continue
+
+        # Add to batch for Modal evaluation
+        prepared.append({
+            "index": i,
+            "ref_code": ref_code,
+            "kernel_code": kernel_code,
+            "backend": e.get("backend", "triton"),
+            "num_correct_trials": e.get("num_correct_trials", 5),
+            "measure_performance": e.get("measure_performance", False),
+            "num_perf_trials": e.get("num_perf_trials", 100),
+            "precision": "fp32",
+            "cheated": cheated,
+        })
+
+    # Run Modal batch evaluation
+    if prepared:
+        config = ModalEvaluatorConfig(timeout=int(timeout))
+        evaluator = get_modal_evaluator(config)
+
+        try:
+            modal_results = await evaluator.evaluate_batch(prepared)
+
+            for prep, modal_result in zip(prepared, modal_results):
+                modal_result["cheated"] = prep["cheated"]
+                results.append((prep["index"], modal_result, None))
+
+        except Exception as e:
+            logger.exception("Modal batch evaluation failed")
+            for prep in prepared:
+                error_result: KernelEvalResult = {
+                    "format_ok": True,
+                    "compiled": False,
+                    "correctness": False,
+                    "tests_passed": 0,
+                    "tests_total": prep.get("num_correct_trials", 5),
+                    "speedup": None,
+                    "runtime_ms": None,
+                    "baseline_runtime_ms": None,
+                    "cheated": prep["cheated"],
+                    "error_message": f"Modal batch failed: {e}",
+                    "code_length": len(prep["kernel_code"]),
+                    "metadata": {},
+                }
+                results.append((prep["index"], error_result, None))
+
+    # Sort by original index and return
+    results.sort(key=lambda x: x[0])
+    return [r[1] for r in results]
+
+
 def get_problem_count(level: int, dataset_src: str = "huggingface") -> int:
     """Get the number of problems in a level."""
     _ensure_kernelbench_imported()

@@ -42,6 +42,7 @@ from kernel_rl.envs.kernelbench_client import (
     KernelEvalResult,
     ParsedResponse,
     evaluate_kernel,
+    evaluate_kernel_async,
     extract_code_block,
     parse_structured_response,
     get_problem_ids,
@@ -330,6 +331,8 @@ class MultiTurnKernelBenchEnv(Env):
         measure_performance: bool = False,
         early_stop_on_correct: bool = True,
         speedup_threshold: float | None = None,  # e.g. 1.0 for any speedup
+        use_modal: bool = True,
+        modal_timeout: float = 180.0,
     ):
         """
         Initialize multi-turn KernelBench environment.
@@ -344,6 +347,8 @@ class MultiTurnKernelBenchEnv(Env):
             measure_performance: Whether to measure kernel runtime
             early_stop_on_correct: Stop early if kernel is fully correct
             speedup_threshold: Required speedup to trigger early stop (None = any correct)
+            use_modal: Whether to use Modal for isolated GPU evaluation
+            modal_timeout: Timeout in seconds for Modal evaluation
         """
         self.problem = problem
         self.renderer = renderer
@@ -353,6 +358,8 @@ class MultiTurnKernelBenchEnv(Env):
         self.measure_performance = measure_performance
         self.early_stop_on_correct = early_stop_on_correct
         self.speedup_threshold = speedup_threshold
+        self.use_modal = use_modal
+        self.modal_timeout = modal_timeout
 
         # Build system prompt
         self._system_prompt = system_prompt or MULTITURN_SYSTEM_PROMPT.format(
@@ -511,16 +518,29 @@ class MultiTurnKernelBenchEnv(Env):
         # Check format validity
         format_ok = parsed.format_ok
 
-        # Evaluate the kernel
-        eval_result = evaluate_kernel(
-            level=state.level,
-            problem_id=state.problem_id,
-            backend=state.backend,
-            kernel_code=kernel_code,
-            dataset_src=self.problem.dataset_src,
-            num_correct_trials=self.num_correct_trials,
-            measure_performance=self.measure_performance,
-        )
+        # Evaluate the kernel (using Modal for isolation if enabled)
+        if self.use_modal:
+            eval_result = await evaluate_kernel_async(
+                level=state.level,
+                problem_id=state.problem_id,
+                backend=state.backend,
+                kernel_code=kernel_code,
+                dataset_src=self.problem.dataset_src,
+                num_correct_trials=self.num_correct_trials,
+                measure_performance=self.measure_performance,
+                timeout=self.modal_timeout,
+            )
+        else:
+            # Local evaluation (no isolation - use with caution)
+            eval_result = evaluate_kernel(
+                level=state.level,
+                problem_id=state.problem_id,
+                backend=state.backend,
+                kernel_code=kernel_code,
+                dataset_src=self.problem.dataset_src,
+                num_correct_trials=self.num_correct_trials,
+                measure_performance=self.measure_performance,
+            )
         state.last_eval = eval_result
 
         # Compute per-step score (includes thinking bonus)
@@ -633,6 +653,8 @@ class MultiTurnKernelBenchEnvGroupBuilder(EnvGroupBuilder):
     measure_performance: bool = False
     early_stop_on_correct: bool = True
     speedup_threshold: float | None = None
+    use_modal: bool = True
+    modal_timeout: float = 180.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of multi-turn environments for this problem."""
@@ -647,6 +669,8 @@ class MultiTurnKernelBenchEnvGroupBuilder(EnvGroupBuilder):
                 measure_performance=self.measure_performance,
                 early_stop_on_correct=self.early_stop_on_correct,
                 speedup_threshold=self.speedup_threshold,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
             for _ in range(self.group_size)
         ]
@@ -692,6 +716,8 @@ class MultiTurnKernelBenchRLDataset(RLDataset):
         speedup_threshold: float | None = None,
         shuffle: bool = True,
         num_epochs: int = 1,
+        use_modal: bool = True,
+        modal_timeout: float = 180.0,
     ):
         self.problems = problems
         self.renderer = renderer
@@ -706,6 +732,8 @@ class MultiTurnKernelBenchRLDataset(RLDataset):
         self.speedup_threshold = speedup_threshold
         self.shuffle = shuffle
         self.num_epochs = num_epochs
+        self.use_modal = use_modal
+        self.modal_timeout = modal_timeout
 
         # Create indices
         import random
@@ -740,6 +768,8 @@ class MultiTurnKernelBenchRLDataset(RLDataset):
                 measure_performance=self.measure_performance,
                 early_stop_on_correct=self.early_stop_on_correct,
                 speedup_threshold=self.speedup_threshold,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
             builders.append(builder)
 
@@ -794,6 +824,11 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
     prompt_option: str = "raicl"  # RA-ICL recommended for multi-turn
     rag_index_path: str | None = None
     raicl_k: int = 3
+
+    # Modal configuration (isolated GPU evaluation)
+    use_modal: bool = True
+    modal_gpu_type: str = "A100"
+    modal_timeout: float = 180.0
 
     async def __call__(self, tokenizer=None) -> tuple[RLDataset, RLDataset | None]:
         """Build train and optional test datasets."""
@@ -850,6 +885,17 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
             thinking_weight=self.reward_thinking_weight,
         )
 
+        # Configure Modal evaluator if enabled
+        if self.use_modal:
+            from kernel_rl.modal.evaluator import ModalEvaluatorConfig, set_modal_evaluator, ModalKernelEvaluator
+            modal_config = ModalEvaluatorConfig(
+                enabled=True,
+                gpu_type=self.modal_gpu_type,
+                timeout=int(self.modal_timeout),
+            )
+            set_modal_evaluator(ModalKernelEvaluator(modal_config))
+            logger.info(f"Modal evaluator configured: GPU={self.modal_gpu_type}, timeout={self.modal_timeout}s")
+
         # Create train dataset
         train_dataset = MultiTurnKernelBenchRLDataset(
             problems=train_problems,
@@ -864,6 +910,8 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
             speedup_threshold=self.speedup_threshold,
             shuffle=self.shuffle,
             num_epochs=self.num_epochs,
+            use_modal=self.use_modal,
+            modal_timeout=self.modal_timeout,
         )
 
         # Create test dataset
@@ -882,6 +930,8 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
                 speedup_threshold=self.speedup_threshold,
                 shuffle=False,
                 num_epochs=1,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
 
         return train_dataset, test_dataset

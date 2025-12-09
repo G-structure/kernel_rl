@@ -36,6 +36,7 @@ from kernel_rl.envs.kernelbench_client import (
     KernelEvalResult,
     ParsedResponse,
     evaluate_kernel,
+    evaluate_kernel_async,
     get_problem_ids,
     extract_code_block,
     parse_structured_response,
@@ -102,6 +103,8 @@ class KernelBenchEnv(Env):
         system_prompt: str | None = None,
         num_correct_trials: int = 5,
         measure_performance: bool = False,
+        use_modal: bool = True,
+        modal_timeout: float = 180.0,
     ):
         """
         Initialize the KernelBench environment.
@@ -113,6 +116,8 @@ class KernelBenchEnv(Env):
             system_prompt: Optional custom system prompt
             num_correct_trials: Number of correctness trials for evaluation
             measure_performance: Whether to measure kernel runtime
+            use_modal: Whether to use Modal for isolated GPU evaluation
+            modal_timeout: Timeout in seconds for Modal evaluation
         """
         self.problem = problem
         self.renderer = renderer
@@ -120,6 +125,8 @@ class KernelBenchEnv(Env):
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.num_correct_trials = num_correct_trials
         self.measure_performance = measure_performance
+        self.use_modal = use_modal
+        self.modal_timeout = modal_timeout
 
         # State for multi-turn (future)
         self._turn = 0
@@ -183,16 +190,29 @@ class KernelBenchEnv(Env):
         # Check format validity
         format_ok = parsed.format_ok
 
-        # Evaluate the kernel
-        eval_result = evaluate_kernel(
-            level=self.problem.level,
-            problem_id=self.problem.problem_id,
-            backend=self.problem.backend,
-            kernel_code=kernel_code,
-            dataset_src=self.problem.dataset_src,
-            num_correct_trials=self.num_correct_trials,
-            measure_performance=self.measure_performance,
-        )
+        # Evaluate the kernel (using Modal for isolation if enabled)
+        if self.use_modal:
+            eval_result = await evaluate_kernel_async(
+                level=self.problem.level,
+                problem_id=self.problem.problem_id,
+                backend=self.problem.backend,
+                kernel_code=kernel_code,
+                dataset_src=self.problem.dataset_src,
+                num_correct_trials=self.num_correct_trials,
+                measure_performance=self.measure_performance,
+                timeout=self.modal_timeout,
+            )
+        else:
+            # Local evaluation (no isolation - use with caution)
+            eval_result = evaluate_kernel(
+                level=self.problem.level,
+                problem_id=self.problem.problem_id,
+                backend=self.problem.backend,
+                kernel_code=kernel_code,
+                dataset_src=self.problem.dataset_src,
+                num_correct_trials=self.num_correct_trials,
+                measure_performance=self.measure_performance,
+            )
         self._last_result = eval_result
 
         # Compute reward (includes thinking bonus)
@@ -258,6 +278,8 @@ class KernelBenchEnvGroupBuilder(EnvGroupBuilder):
     system_prompt: str | None = None
     num_correct_trials: int = 5
     measure_performance: bool = False
+    use_modal: bool = True
+    modal_timeout: float = 180.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for this problem."""
@@ -269,6 +291,8 @@ class KernelBenchEnvGroupBuilder(EnvGroupBuilder):
                 system_prompt=self.system_prompt,
                 num_correct_trials=self.num_correct_trials,
                 measure_performance=self.measure_performance,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
             for _ in range(self.group_size)
         ]
@@ -313,6 +337,8 @@ class KernelBenchRLDataset(RLDataset):
         measure_performance: bool = False,
         shuffle: bool = True,
         num_epochs: int = 1,
+        use_modal: bool = True,
+        modal_timeout: float = 180.0,
     ):
         """
         Initialize the RL dataset.
@@ -328,6 +354,8 @@ class KernelBenchRLDataset(RLDataset):
             measure_performance: Whether to measure runtime
             shuffle: Whether to shuffle problems each epoch
             num_epochs: Number of training epochs
+            use_modal: Whether to use Modal for isolated GPU evaluation
+            modal_timeout: Timeout in seconds for Modal evaluation
         """
         self.problems = problems
         self.renderer = renderer
@@ -339,6 +367,8 @@ class KernelBenchRLDataset(RLDataset):
         self.measure_performance = measure_performance
         self.shuffle = shuffle
         self.num_epochs = num_epochs
+        self.use_modal = use_modal
+        self.modal_timeout = modal_timeout
 
         # Create shuffled indices for each epoch
         self._problem_indices: list[int] = []
@@ -379,6 +409,8 @@ class KernelBenchRLDataset(RLDataset):
                 system_prompt=self.system_prompt,
                 num_correct_trials=self.num_correct_trials,
                 measure_performance=self.measure_performance,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
             builders.append(builder)
 
@@ -429,6 +461,11 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
     prompt_option: str = "one_shot"  # "zero_shot", "one_shot", "few_shot", "raicl"
     rag_index_path: str | None = None  # Path to RAG index (required for raicl)
     raicl_k: int = 3  # Number of examples to retrieve for RA-ICL
+
+    # Modal configuration (isolated GPU evaluation)
+    use_modal: bool = True  # Use Modal for isolated evaluation
+    modal_gpu_type: str = "A100"  # GPU type to use on Modal
+    modal_timeout: float = 180.0  # Timeout in seconds per kernel
 
     async def __call__(self, tokenizer=None) -> tuple[RLDataset, RLDataset | None]:
         """Build train and optional test datasets.
@@ -489,6 +526,17 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
             thinking_weight=self.reward_thinking_weight,
         )
 
+        # Configure Modal evaluator if enabled
+        if self.use_modal:
+            from kernel_rl.modal.evaluator import ModalEvaluatorConfig, set_modal_evaluator, ModalKernelEvaluator
+            modal_config = ModalEvaluatorConfig(
+                enabled=True,
+                gpu_type=self.modal_gpu_type,
+                timeout=int(self.modal_timeout),
+            )
+            set_modal_evaluator(ModalKernelEvaluator(modal_config))
+            logger.info(f"Modal evaluator configured: GPU={self.modal_gpu_type}, timeout={self.modal_timeout}s")
+
         # Create train dataset
         train_dataset = KernelBenchRLDataset(
             problems=train_problems,
@@ -500,6 +548,8 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
             measure_performance=self.measure_performance,
             shuffle=self.shuffle,
             num_epochs=self.num_epochs,
+            use_modal=self.use_modal,
+            modal_timeout=self.modal_timeout,
         )
 
         # Create test dataset if we have test problems
@@ -515,6 +565,8 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
                 measure_performance=self.measure_performance,
                 shuffle=False,
                 num_epochs=1,
+                use_modal=self.use_modal,
+                modal_timeout=self.modal_timeout,
             )
 
         return train_dataset, test_dataset

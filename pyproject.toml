@@ -45,6 +45,8 @@ dependencies = [
     # RAG dependencies
     "faiss-cpu>=1.7.0",
     "sentence-transformers>=2.2.0",
+    # Modal Labs for isolated GPU evaluation
+    "modal>=0.64.0",
 ]
 
 [project.optional-dependencies]
