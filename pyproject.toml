@@ -66,10 +66,10 @@ dev = [
 ]
 
 [tool.uv.sources]
-# tinker-cookbook installed from local clone
-tinker-cookbook = { path = "../tinker-cookbook", editable = true }
-# KernelBench installed from local clone (package name is "src")
-src = { path = "../KernelBench", editable = true }
+# tinker-cookbook from git (pinned commit)
+tinker-cookbook = { git = "https://github.com/thinking-machines-lab/tinker-cookbook.git", rev = "989f84926245b227634797b8eac46abe232f9c24" }
+# KernelBench from git (package name is "src", pinned commit)
+src = { git = "https://github.com/ScalingIntelligence/KernelBench.git", rev = "404ee91422cdb78646947faba2cce4c03601bc52" }
 
 [project.scripts]
 train-kernel-rl = "kernel_rl.scripts.train_kernel_rl:main"
