@@ -1,5 +1,9 @@
 """
-KISS retriever for kernel examples using FAISS and sentence-transformers.
+KISS retriever for kernel examples using FAISS and embeddings.
+
+Supports multiple embedding backends:
+- MLX (Apple Silicon) - fastest on Mac
+- sentence-transformers with CUDA/MPS/CPU - cross-platform
 """
 
 from __future__ import annotations
@@ -12,18 +16,30 @@ from typing import Literal
 
 import numpy as np
 
+from kernel_rl.rag.embeddings import (
+    BaseEmbedder,
+    EmbeddingBackend,
+    create_embedder,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class KernelRetriever:
     """
-    Simple retriever using sentence-transformers embeddings + FAISS index.
+    Simple retriever using embeddings + FAISS index.
+
+    Supports multiple backends:
+    - MLX (Apple Silicon) - fastest on Mac
+    - CUDA (NVIDIA GPUs) - fastest on Linux/Windows with GPU
+    - MPS (Apple Metal via PyTorch) - fallback for Mac
+    - CPU - universal fallback
 
     Usage:
         # Build index (once)
         corpus = KernelCorpus()
         corpus.load()
-        retriever = KernelRetriever()
+        retriever = KernelRetriever(backend="auto")  # Auto-detect best backend
         retriever.build_index(corpus)
         retriever.save("kernel_index")
 
@@ -38,41 +54,38 @@ class KernelRetriever:
         self,
         model_name: str = DEFAULT_MODEL,
         device: str | None = None,
+        backend: EmbeddingBackend = "auto",
     ):
         """
         Initialize retriever.
 
         Args:
-            model_name: Sentence-transformer model for embeddings
-            device: Device for embedding model ("cuda", "cpu", or None for auto)
+            model_name: Model name for embeddings
+            device: Device for embedding model (deprecated, use backend instead)
+            backend: Embedding backend ("mlx", "cuda", "mps", "cpu", "auto")
         """
         self.model_name = model_name
-        self.device = device
+        self.backend = backend
 
-        self._model = None
+        # Handle legacy device parameter
+        if device is not None and backend == "auto":
+            self.backend = device if device in ("mlx", "cuda", "mps", "cpu") else "auto"
+
+        self._embedder: BaseEmbedder | None = None
         self._index = None
         self._examples: list = []
         self._embeddings: np.ndarray | None = None
 
-    def _get_model(self):
+    def _get_embedder(self) -> BaseEmbedder:
         """Lazy-load the embedding model."""
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
-
-            self._model = SentenceTransformer(self.model_name, device=self.device)
-        return self._model
+        if self._embedder is None:
+            self._embedder = create_embedder(self.model_name, self.backend)
+        return self._embedder
 
     def _embed(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
         """Embed a list of texts."""
-        model = self._get_model()
-        embeddings = model.encode(
-            texts,
-            batch_size=batch_size,
-            show_progress_bar=True,
-            convert_to_numpy=True,
-            normalize_embeddings=True,  # For cosine similarity via dot product
-        )
-        return embeddings
+        embedder = self._get_embedder()
+        return embedder.encode(texts, batch_size=batch_size, show_progress_bar=True)
 
     def build_index(
         self,
@@ -183,8 +196,23 @@ class KernelRetriever:
         logger.info(f"Saved index to {path}")
 
     @classmethod
-    def load(cls, path: str | Path, device: str | None = None) -> "KernelRetriever":
-        """Load index and examples from disk."""
+    def load(
+        cls,
+        path: str | Path,
+        device: str | None = None,
+        backend: EmbeddingBackend = "auto",
+    ) -> "KernelRetriever":
+        """
+        Load index and examples from disk.
+
+        Args:
+            path: Path to saved index directory
+            device: Device for embedding model (deprecated, use backend)
+            backend: Embedding backend ("mlx", "cuda", "mps", "cpu", "auto")
+
+        Returns:
+            Loaded KernelRetriever instance
+        """
         import faiss
 
         path = Path(path)
@@ -193,8 +221,12 @@ class KernelRetriever:
         with open(path / "metadata.json") as f:
             metadata = json.load(f)
 
-        # Create retriever
-        retriever = cls(model_name=metadata["model_name"], device=device)
+        # Create retriever with specified backend
+        retriever = cls(
+            model_name=metadata["model_name"],
+            device=device,
+            backend=backend,
+        )
 
         # Load FAISS index
         retriever._index = faiss.read_index(str(path / "index.faiss"))
@@ -205,7 +237,7 @@ class KernelRetriever:
 
         logger.info(
             f"Loaded index with {retriever._index.ntotal} vectors, "
-            f"{len(retriever._examples)} examples"
+            f"{len(retriever._examples)} examples (backend={retriever.backend})"
         )
 
         return retriever
