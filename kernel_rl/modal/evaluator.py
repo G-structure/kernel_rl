@@ -37,11 +37,13 @@ class ModalEvaluatorConfig:
     # Modal configuration
     enabled: bool = True
     gpu_type: str = "A100"  # A100, H100, L40S, T4, etc.
-    timeout: int = 180  # seconds per kernel
+    timeout: int = 120  # seconds per kernel (matches Modal app default)
 
     # Batch configuration
     max_batch_size: int = 32  # Max kernels to evaluate in parallel
     return_exceptions: bool = True  # Return exceptions as results
+    batch_single: bool = True  # Coalesce single evals into batches
+    batch_window_s: float = 0.05  # Coalesce window for single-eval batching
 
     # API configuration
     modal_token_env: str = "MODAL_TOKEN_ID"  # Environment variable for Modal token
@@ -78,6 +80,7 @@ class ModalKernelEvaluator:
         self._deployed_cls = None
         self._gpu_arch: list[str] | None = None
         self._lock = threading.Lock()
+        self._batcher: ModalBatcher | None = None
 
     def _check_modal_available(self) -> bool:
         """Check if Modal is available and configured."""
@@ -191,9 +194,12 @@ class ModalKernelEvaluator:
     ) -> dict[str, Any]:
         """Synchronous single kernel evaluation using deployed Modal app."""
         evaluator_cls = self._get_deployed_evaluator()
+        evaluator = evaluator_cls.with_options(
+            gpu=self.config.gpu_type, timeout=self.config.timeout
+        )()
 
         # Call the deployed function - no app.run() needed
-        result = evaluator_cls().evaluate.remote(
+        result = evaluator.evaluate.remote(
             ref_code=ref_code,
             kernel_code=kernel_code,
             backend=backend,
@@ -275,7 +281,9 @@ class ModalKernelEvaluator:
         ]
 
         # Call the deployed function - no app.run() needed
-        evaluator = evaluator_cls()
+        evaluator = evaluator_cls.with_options(
+            gpu=self.config.gpu_type, timeout=self.config.timeout
+        )()
         results = list(
             evaluator.evaluate.starmap(
                 args,
@@ -311,6 +319,48 @@ class ModalKernelEvaluator:
 
         return processed
 
+    async def evaluate_single_batched(
+        self,
+        ref_code: str,
+        kernel_code: str,
+        backend: str = "triton",
+        num_correct_trials: int = 5,
+        measure_performance: bool = False,
+        num_perf_trials: int = 100,
+        precision: str = "fp32",
+    ) -> dict[str, Any]:
+        """
+        Coalesce multiple single-eval requests into Modal batch calls.
+
+        This keeps API compatibility with evaluate_single while leveraging
+        starmap parallelism to reduce per-request overhead.
+        """
+        if not self.config.batch_single:
+            return await self.evaluate_single(
+                ref_code,
+                kernel_code,
+                backend,
+                num_correct_trials,
+                measure_performance,
+                num_perf_trials,
+                precision,
+            )
+
+        # Lazily create batcher to avoid overhead when unused
+        if self._batcher is None:
+            self._batcher = ModalBatcher(self)
+
+        request = {
+            "ref_code": ref_code,
+            "kernel_code": kernel_code,
+            "backend": backend,
+            "num_correct_trials": num_correct_trials,
+            "measure_performance": measure_performance,
+            "num_perf_trials": num_perf_trials,
+            "precision": precision,
+        }
+        return await self._batcher.submit(request)
+
 
 # Global evaluator instance (lazy initialized)
 _global_evaluator: ModalKernelEvaluator | None = None
@@ -323,6 +373,9 @@ def get_modal_evaluator(
     global _global_evaluator
     if _global_evaluator is None:
         _global_evaluator = ModalKernelEvaluator(config)
+    elif config is not None:
+        # Update config if provided after initialization
+        _global_evaluator.config = config
     return _global_evaluator
 
 
@@ -351,3 +404,55 @@ async def evaluate_kernel_batch(
     """Evaluate multiple kernels in parallel using Modal."""
     evaluator = get_modal_evaluator(config)
     return await evaluator.evaluate_batch(evaluations)
+
+
+class ModalBatcher:
+    """
+    Coalesces single-eval requests into batch RPCs to Modal.
+
+    Requests submitted within a short window are grouped and dispatched
+    via evaluate_batch for better throughput and lower latency.
+    """
+
+    def __init__(self, evaluator: ModalKernelEvaluator):
+        self.evaluator = evaluator
+        self._pending: list[tuple[dict[str, Any], asyncio.Future]] = []
+        self._lock = asyncio.Lock()
+        self._flush_task: asyncio.Task | None = None
+
+    async def submit(self, request: dict[str, Any]) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        async with self._lock:
+            self._pending.append((request, fut))
+            should_flush_now = len(self._pending) >= self.evaluator.config.max_batch_size
+            if should_flush_now:
+                await self._flush_locked()
+            elif self._flush_task is None:
+                self._flush_task = asyncio.create_task(self._flush_after_delay())
+        return await fut
+
+    async def _flush_after_delay(self):
+        await asyncio.sleep(self.evaluator.config.batch_window_s)
+        async with self._lock:
+            await self._flush_locked()
+
+    async def _flush_locked(self):
+        if not self._pending:
+            return
+        batch = self._pending
+        self._pending = []
+        self._flush_task = None
+        requests = [req for req, _ in batch]
+
+        try:
+            results = await self.evaluator.evaluate_batch(requests)
+        except Exception as exc:  # pragma: no cover - defensive
+            for _, fut in batch:
+                if not fut.done():
+                    fut.set_exception(exc)
+            return
+
+        for result, (_, fut) in zip(results, batch, strict=True):
+            if not fut.done():
+                fut.set_result(result)

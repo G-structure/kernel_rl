@@ -333,7 +333,7 @@ class MultiTurnKernelBenchEnv(Env):
         early_stop_on_correct: bool = True,
         speedup_threshold: float | None = None,  # e.g. 1.0 for any speedup
         use_modal: bool = True,
-        modal_timeout: float = 180.0,
+        modal_timeout: float = 120.0,
     ):
         """
         Initialize multi-turn KernelBench environment.
@@ -665,7 +665,7 @@ class MultiTurnKernelBenchEnvGroupBuilder(EnvGroupBuilder):
     early_stop_on_correct: bool = True
     speedup_threshold: float | None = None
     use_modal: bool = True
-    modal_timeout: float = 180.0
+    modal_timeout: float = 120.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of multi-turn environments for this problem."""
@@ -728,7 +728,7 @@ class MultiTurnKernelBenchRLDataset(RLDataset):
         shuffle: bool = True,
         num_epochs: int = 1,
         use_modal: bool = True,
-        modal_timeout: float = 180.0,
+        modal_timeout: float = 120.0,
     ):
         self.problems = problems
         self.renderer = renderer
@@ -839,7 +839,7 @@ class MultiTurnKernelBenchDatasetBuilder(RLDatasetBuilder):
     # Modal configuration (isolated GPU evaluation)
     use_modal: bool = True
     modal_gpu_type: str = "A100"
-    modal_timeout: float = 180.0
+    modal_timeout: float = 120.0
 
     async def __call__(self, tokenizer=None) -> tuple[RLDataset, RLDataset | None]:
         """Build train and optional test datasets."""

@@ -28,7 +28,7 @@ GPU_ARCH_MAPPING = {
 
 # Default configuration
 DEFAULT_GPU = "A100"
-DEFAULT_TIMEOUT = 180  # 3 minutes per kernel
+DEFAULT_TIMEOUT = 120  # 2 minutes per kernel by default (tunable via config)
 
 # Get KernelBench root path (for local development)
 KERNELBENCH_ROOT = os.environ.get(
@@ -63,7 +63,13 @@ image = (
 app = modal.App("kernel-rl-evaluator")
 
 
-@app.cls(image=image, gpu="A100", timeout=DEFAULT_TIMEOUT)
+@app.cls(
+    image=image,
+    gpu="A100",
+    timeout=DEFAULT_TIMEOUT,
+    concurrency_limit=32,
+    keep_warm=4,
+)
 class KernelEvaluator:
     """Modal class for kernel evaluation with configurable GPU."""
 

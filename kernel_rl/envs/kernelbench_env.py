@@ -105,7 +105,7 @@ class KernelBenchEnv(Env):
         num_correct_trials: int = 5,
         measure_performance: bool = False,
         use_modal: bool = True,
-        modal_timeout: float = 180.0,
+        modal_timeout: float = 120.0,
     ):
         """
         Initialize the KernelBench environment.
@@ -290,7 +290,7 @@ class KernelBenchEnvGroupBuilder(EnvGroupBuilder):
     num_correct_trials: int = 5
     measure_performance: bool = False
     use_modal: bool = True
-    modal_timeout: float = 180.0
+    modal_timeout: float = 120.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of environments for this problem."""
@@ -476,7 +476,7 @@ class KernelBenchDatasetBuilder(RLDatasetBuilder):
     # Modal configuration (isolated GPU evaluation)
     use_modal: bool = True  # Use Modal for isolated evaluation
     modal_gpu_type: str = "A100"  # GPU type to use on Modal
-    modal_timeout: float = 180.0  # Timeout in seconds per kernel
+    modal_timeout: float = 120.0  # Timeout in seconds per kernel
 
     async def __call__(self, tokenizer=None) -> tuple[RLDataset, RLDataset | None]:
         """Build train and optional test datasets.

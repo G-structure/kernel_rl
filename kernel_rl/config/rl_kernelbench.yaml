@@ -24,7 +24,7 @@
 # Kevin uses QwQ-32B, we use Qwen3-30B-A3B (similar architecture)
 # =============================================================================
 model_name: "Qwen/Qwen3-30B-A3B"
-lora_rank: 32
+lora_rank: 256
 learning_rate: 0.000002 # Kevin uses 2e-6 (very conservative)
 
 # =============================================================================

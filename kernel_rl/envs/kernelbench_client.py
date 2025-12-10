@@ -713,7 +713,7 @@ async def evaluate_kernel_async(
     # Run evaluation on Modal
     modal_start = time.perf_counter()
     try:
-        result = await evaluator.evaluate_single(
+        result = await evaluator.evaluate_single_batched(
             ref_code=ref_code,
             kernel_code=kernel_code,
             backend=backend,
