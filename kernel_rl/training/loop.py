@@ -27,7 +27,7 @@ import torch
 from tinker.types import LossFnType
 
 from tinker_cookbook import checkpoint_utils
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TinkerTokenCompleter, TokensWithLogprobs
 from tinker_cookbook.rl.data_processing import (
     assemble_training_data,
     compute_advantages,
@@ -268,6 +268,10 @@ def compute_trajectory_metrics(
     all_compiled = []
     all_correct = []
     all_cheated = []
+    all_eval_times = []
+    all_step_times = []
+    all_ref_load_times = []
+    all_modal_eval_times = []
 
     for tg in trajectory_groups:
         rewards = tg.get_total_rewards()
@@ -281,6 +285,14 @@ def compute_trajectory_metrics(
                     all_compiled.append(trans.metrics.get("compiled", 0))
                     all_correct.append(trans.metrics.get("correctness", 0))
                     all_cheated.append(trans.metrics.get("cheated", 0))
+                    if "time/eval" in trans.metrics:
+                        all_eval_times.append(trans.metrics["time/eval"])
+                    if "time/step_total" in trans.metrics:
+                        all_step_times.append(trans.metrics["time/step_total"])
+                    if "time/ref_load" in trans.metrics:
+                        all_ref_load_times.append(trans.metrics["time/ref_load"])
+                    if "time/modal_eval" in trans.metrics:
+                        all_modal_eval_times.append(trans.metrics["time/modal_eval"])
 
     if all_rewards:
         metrics["reward/mean"] = float(np.mean(all_rewards))
@@ -296,6 +308,18 @@ def compute_trajectory_metrics(
         metrics["kernel/correct_rate"] = float(np.mean(all_correct))
     if all_cheated:
         metrics["kernel/cheat_rate"] = float(np.mean(all_cheated))
+    if all_eval_times:
+        metrics["time/eval_mean"] = float(np.mean(all_eval_times))
+        metrics["time/eval_max"] = float(np.max(all_eval_times))
+    if all_step_times:
+        metrics["time/step_mean"] = float(np.mean(all_step_times))
+        metrics["time/step_max"] = float(np.max(all_step_times))
+    if all_ref_load_times:
+        metrics["time/ref_load_mean"] = float(np.mean(all_ref_load_times))
+        metrics["time/ref_load_max"] = float(np.max(all_ref_load_times))
+    if all_modal_eval_times:
+        metrics["time/modal_eval_mean"] = float(np.mean(all_modal_eval_times))
+        metrics["time/modal_eval_max"] = float(np.max(all_modal_eval_times))
 
     metrics["batch/num_groups"] = len(trajectory_groups)
     metrics["batch/num_trajectories"] = sum(
@@ -341,6 +365,10 @@ def compute_multiturn_trajectory_metrics(
     all_compiled = []
     all_correct = []
     all_step_scores = []
+    all_eval_times = []
+    all_step_times = []
+    all_ref_load_times = []
+    all_modal_eval_times = []
 
     for tg, envs in zip(trajectory_groups, env_groups):
         for traj, env in zip(tg.trajectories_G, envs):
@@ -369,6 +397,14 @@ def compute_multiturn_trajectory_metrics(
 
                     if "step_score" in trans.metrics:
                         all_step_scores.append(trans.metrics["step_score"])
+                    if "time/eval" in trans.metrics:
+                        all_eval_times.append(trans.metrics["time/eval"])
+                    if "time/step_total" in trans.metrics:
+                        all_step_times.append(trans.metrics["time/step_total"])
+                    if "time/ref_load" in trans.metrics:
+                        all_ref_load_times.append(trans.metrics["time/ref_load"])
+                    if "time/modal_eval" in trans.metrics:
+                        all_modal_eval_times.append(trans.metrics["time/modal_eval"])
 
                     traj_correct_values.append(correct)
                     if "speedup" in trans.metrics:
@@ -406,6 +442,18 @@ def compute_multiturn_trajectory_metrics(
     if all_best_speedup:
         metrics["multiturn/best_speedup_mean"] = float(np.mean(all_best_speedup))
         metrics["multiturn/best_speedup_max"] = float(np.max(all_best_speedup))
+    if all_eval_times:
+        metrics["time/eval_mean"] = float(np.mean(all_eval_times))
+        metrics["time/eval_max"] = float(np.max(all_eval_times))
+    if all_step_times:
+        metrics["time/step_mean"] = float(np.mean(all_step_times))
+        metrics["time/step_max"] = float(np.max(all_step_times))
+    if all_ref_load_times:
+        metrics["time/ref_load_mean"] = float(np.mean(all_ref_load_times))
+        metrics["time/ref_load_max"] = float(np.max(all_ref_load_times))
+    if all_modal_eval_times:
+        metrics["time/modal_eval_mean"] = float(np.mean(all_modal_eval_times))
+        metrics["time/modal_eval_max"] = float(np.max(all_modal_eval_times))
 
     # Per-turn metrics
     for turn in sorted(turn_compiled.keys()):

@@ -1387,7 +1387,7 @@ dev = [
 ]
 mlx = [
     { name = "mlx" },
-    { name = "mlx-lm" },
+    { name = "mlx-embedding-models" },
 ]
 
 [package.dev-dependencies]
@@ -1409,10 +1409,10 @@ requires-dist = [
     { name = "litellm" },
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "mlx", specifier = ">=0.30.0" },
-    { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.20.0" },
+    { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.30.0" },
     { name = "mlx-embedding-models", specifier = ">=0.0.11" },
+    { name = "mlx-embedding-models", marker = "extra == 'mlx'", specifier = ">=0.0.11" },
     { name = "mlx-lm", specifier = ">=0.28.4" },
-    { name = "mlx-lm", marker = "extra == 'mlx'", specifier = ">=0.20.0" },
     { name = "modal", specifier = ">=0.64.0" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "numpy" },

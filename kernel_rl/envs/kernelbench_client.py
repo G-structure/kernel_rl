@@ -8,9 +8,11 @@ allowing direct evaluation of kernel code without going through the CLI scripts.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import sys
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TypedDict, Optional, Any, TYPE_CHECKING
 import logging
@@ -326,6 +328,22 @@ def check_for_cheating(kernel_code: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _load_hf_kernelbench_dataset():
+    """Load the HuggingFace KernelBench dataset once per process."""
+    from datasets import load_dataset
+
+    return load_dataset("ScalingIntelligence/KernelBench")
+
+
+@functools.lru_cache(maxsize=16)
+def _get_hf_level_data(level: int):
+    """Get cached HF dataset split for a given level."""
+    dataset = _load_hf_kernelbench_dataset()
+    return dataset[f"level_{level}"]
+
+
+@functools.lru_cache(maxsize=1024)
 def get_reference_code(level: int, problem_id: int, dataset_src: str = "huggingface") -> str:
     """
     Get the reference PyTorch code for a problem.
@@ -338,14 +356,18 @@ def get_reference_code(level: int, problem_id: int, dataset_src: str = "huggingf
     Returns:
         The reference architecture source code
     """
-    _ensure_kernelbench_imported()
-
     if dataset_src == "huggingface":
-        from datasets import load_dataset
-        dataset = load_dataset("ScalingIntelligence/KernelBench")
-        level_data = dataset[f"level_{level}"]
+        level_data = _get_hf_level_data(level)
 
-        # Filter to get the specific problem
+        # Fast path: problems are 1-indexed and usually stored sequentially
+        try:
+            row = level_data[problem_id - 1]
+            if row["problem_id"] == problem_id:
+                return row["code"]
+        except Exception:
+            pass  # Fall through to filter-based lookup
+
+        # Slow path: filter by problem_id (needed when dataset order changes)
         problem_row = level_data.filter(
             lambda x: x["problem_id"] == problem_id,
             num_proc=None,
@@ -353,9 +375,9 @@ def get_reference_code(level: int, problem_id: int, dataset_src: str = "huggingf
         )
         if len(problem_row) == 0:
             raise ValueError(f"Problem {problem_id} not found in level {level}")
-
         return problem_row["code"][0]
     else:
+        _ensure_kernelbench_imported()
         from src.dataset import construct_kernelbench_dataset
         from src.utils import read_file
 
@@ -390,14 +412,14 @@ def get_prompt_for_problem(
     Returns:
         The prompt string for the model
     """
-    _ensure_kernelbench_imported()
-
     ref_code = get_reference_code(level, problem_id, dataset_src)
 
-    # Handle RA-ICL option
+    # Handle RA-ICL option - doesn't require local KernelBench
     if option == "raicl":
         return get_raicl_prompt_for_code(ref_code, backend, k=raicl_k)
 
+    # Non-raicl options require local KernelBench prompt constructor
+    _ensure_kernelbench_imported()
     from src.prompt_constructor_toml import get_prompt_for_backend
 
     prompt = get_prompt_for_backend(
@@ -628,6 +650,8 @@ async def evaluate_kernel_async(
         ModalEvaluatorConfig,
         get_modal_evaluator,
     )
+    t_total_start = time.perf_counter()
+    timings: dict[str, float] = {}
 
     # Default result for failures
     default_result: KernelEvalResult = {
@@ -655,6 +679,8 @@ async def evaluate_kernel_async(
         default_result["format_ok"] = True
     else:
         default_result["error_message"] = "Could not extract valid kernel code from response"
+        timings["total_eval_s"] = time.perf_counter() - t_total_start
+        default_result["metadata"]["timings"] = timings
         return default_result
 
     # Check for cheating
@@ -664,20 +690,28 @@ async def evaluate_kernel_async(
     # If cheated, return early with zero reward
     if cheated:
         default_result["error_message"] = "Kernel detected as cheating (uses PyTorch ops directly)"
+        timings["total_eval_s"] = time.perf_counter() - t_total_start
+        default_result["metadata"]["timings"] = timings
         return default_result
 
     # Get reference code
+    ref_start = time.perf_counter()
     try:
         ref_code = get_reference_code(level, problem_id, dataset_src)
     except Exception as e:
         default_result["error_message"] = f"Failed to load reference code: {e}"
+        timings["reference_load_s"] = time.perf_counter() - ref_start
+        timings["total_eval_s"] = time.perf_counter() - t_total_start
+        default_result["metadata"]["timings"] = timings
         return default_result
+    timings["reference_load_s"] = time.perf_counter() - ref_start
 
     # Get Modal evaluator with configured timeout
     config = ModalEvaluatorConfig(timeout=int(timeout))
     evaluator = get_modal_evaluator(config)
 
     # Run evaluation on Modal
+    modal_start = time.perf_counter()
     try:
         result = await evaluator.evaluate_single(
             ref_code=ref_code,
@@ -692,11 +726,27 @@ async def evaluate_kernel_async(
         # Add cheating flag (checked locally, not on Modal)
         result["cheated"] = cheated
 
+        timings["modal_eval_s"] = time.perf_counter() - modal_start
+        timings["total_eval_s"] = time.perf_counter() - t_total_start
+        result_metadata = result.get("metadata", {}) or {}
+        result_metadata.setdefault("timings", {}).update(timings)
+        result["metadata"] = result_metadata
+        logger.debug(
+            "Modal eval timings level=%s problem=%s ref_load=%.3fs modal=%.3fs total=%.3fs",
+            level,
+            problem_id,
+            timings.get("reference_load_s", 0.0),
+            timings.get("modal_eval_s", 0.0),
+            timings.get("total_eval_s", 0.0),
+        )
         return result
 
     except Exception as e:
         default_result["error_message"] = f"Modal evaluation failed: {e}"
         logger.exception("Modal kernel evaluation failed")
+        timings["modal_eval_s"] = time.perf_counter() - modal_start
+        timings["total_eval_s"] = time.perf_counter() - t_total_start
+        default_result["metadata"]["timings"] = timings
         return default_result
 
 
@@ -841,13 +891,11 @@ async def evaluate_kernel_batch_async(
 
 def get_problem_count(level: int, dataset_src: str = "huggingface") -> int:
     """Get the number of problems in a level."""
-    _ensure_kernelbench_imported()
-
     if dataset_src == "huggingface":
-        from datasets import load_dataset
-        dataset = load_dataset("ScalingIntelligence/KernelBench")
-        return len(dataset[f"level_{level}"])
+        level_data = _get_hf_level_data(level)
+        return len(level_data)
     else:
+        _ensure_kernelbench_imported()
         from src.dataset import construct_kernelbench_dataset
         return len(construct_kernelbench_dataset(level))
 

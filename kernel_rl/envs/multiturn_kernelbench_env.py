@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -499,6 +500,7 @@ class MultiTurnKernelBenchEnv(Env):
 
         Returns StepResult with per-step reward and whether episode is done.
         """
+        step_start = time.perf_counter()
         state = self.state
 
         # Parse the response
@@ -519,6 +521,7 @@ class MultiTurnKernelBenchEnv(Env):
         format_ok = parsed.format_ok
 
         # Evaluate the kernel (using Modal for isolation if enabled)
+        eval_start = time.perf_counter()
         if self.use_modal:
             eval_result = await evaluate_kernel_async(
                 level=state.level,
@@ -542,6 +545,7 @@ class MultiTurnKernelBenchEnv(Env):
                 measure_performance=self.measure_performance,
             )
         state.last_eval = eval_result
+        eval_time = time.perf_counter() - eval_start
 
         # Compute per-step score (includes thinking bonus)
         step_score = compute_reward(eval_result, self.reward_config, thought_length=len(parsed.thought))
@@ -602,6 +606,13 @@ class MultiTurnKernelBenchEnv(Env):
         }
         if eval_result.get("speedup"):
             metrics["speedup"] = eval_result["speedup"]
+        metrics["time/eval"] = eval_time
+        timing_metadata = (eval_result.get("metadata") or {}).get("timings", {})
+        if "reference_load_s" in timing_metadata:
+            metrics["time/ref_load"] = timing_metadata["reference_load_s"]
+        if "modal_eval_s" in timing_metadata:
+            metrics["time/modal_eval"] = timing_metadata["modal_eval_s"]
+        metrics["time/step_total"] = time.perf_counter() - step_start
 
         # Build next observation if not done
         if state.done:

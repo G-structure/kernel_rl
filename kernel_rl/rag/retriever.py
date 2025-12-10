@@ -48,7 +48,7 @@ class KernelRetriever:
         examples = retriever.retrieve(pytorch_code, k=3, backend="triton")
     """
 
-    DEFAULT_MODEL = "BAAI/bge-code-v1"
+    DEFAULT_MODEL = "bge-small"
 
     def __init__(
         self,

@@ -38,8 +38,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="BAAI/bge-code-v1",
-        help="Embedding model (sentence-transformers compatible)",
+        default="bge-small",
+        help="Embedding model (MLX registry name like 'bge-small' or sentence-transformers name)",
     )
     parser.add_argument(
         "--triton-only",

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Sequence, Callable, Any
@@ -172,6 +173,7 @@ class KernelBenchEnv(Env):
         Returns:
             StepResult with reward and episode done status
         """
+        step_start = time.perf_counter()
         self._turn += 1
 
         # Parse the response to get text
@@ -191,6 +193,7 @@ class KernelBenchEnv(Env):
         format_ok = parsed.format_ok
 
         # Evaluate the kernel (using Modal for isolation if enabled)
+        eval_start = time.perf_counter()
         if self.use_modal:
             eval_result = await evaluate_kernel_async(
                 level=self.problem.level,
@@ -214,6 +217,7 @@ class KernelBenchEnv(Env):
                 measure_performance=self.measure_performance,
             )
         self._last_result = eval_result
+        eval_time = time.perf_counter() - eval_start
 
         # Compute reward (includes thinking bonus)
         reward = compute_reward(eval_result, self.reward_config, thought_length=len(parsed.thought))
@@ -248,6 +252,13 @@ class KernelBenchEnv(Env):
             metrics["speedup"] = eval_result["speedup"]
         if eval_result.get("runtime_ms"):
             metrics["runtime_ms"] = eval_result["runtime_ms"]
+        metrics["time/eval"] = eval_time
+        timing_metadata = (eval_result.get("metadata") or {}).get("timings", {})
+        if "reference_load_s" in timing_metadata:
+            metrics["time/ref_load"] = timing_metadata["reference_load_s"]
+        if "modal_eval_s" in timing_metadata:
+            metrics["time/modal_eval"] = timing_metadata["modal_eval_s"]
+        metrics["time/step_total"] = time.perf_counter() - step_start
 
         # Single-turn: episode ends after first step
         # TODO: Multi-turn support would continue here with compiler feedback

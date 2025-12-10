@@ -149,15 +149,6 @@ class MLXEmbedder(BaseEmbedder):
         self,
         model_name: str = "bge-small",
     ):
-        # Load HF token from environment for private models
-        hf_token = os.environ.get("HF_TOKEN")
-        if hf_token:
-            try:
-                from huggingface_hub import login
-                login(token=hf_token, add_to_git_credential=False)
-            except Exception as e:
-                logger.debug(f"HF login failed: {e}")
-
         from mlx_embedding_models.embedding import EmbeddingModel
 
         self._model = EmbeddingModel.from_registry(model_name)
@@ -184,14 +175,15 @@ class MLXEmbedder(BaseEmbedder):
 
 
 def create_embedder(
-    model_name: str = "BAAI/bge-code-v1",
+    model_name: str = "bge-small",
     backend: EmbeddingBackend = "auto",
 ) -> BaseEmbedder:
     """
     Create an embedder with the specified backend.
 
     Args:
-        model_name: Model name for sentence-transformers (used as reference for MLX)
+        model_name: Model name. For MLX, use registry names like "bge-small".
+                   For sentence-transformers, use "BAAI/bge-code-v1" etc.
         backend: Backend to use ("mlx", "cuda", "mps", "cpu", or "auto")
 
     Returns:
@@ -200,12 +192,16 @@ def create_embedder(
     if backend == "auto":
         backend = detect_best_backend()
 
+    # MLX backend - use MLXEmbedder with registry models
     if backend == "mlx":
         try:
             return MLXEmbedder(model_name)
         except ImportError:
-            logger.warning("MLX not installed, falling back to sentence-transformers")
-            backend = "cpu"
+            logger.warning("MLX not installed, falling back to sentence-transformers with MPS")
+            backend = "mps"
+        except Exception as e:
+            logger.warning(f"MLX embedder failed: {e}, falling back to sentence-transformers with MPS")
+            backend = "mps"
 
     # Use sentence-transformers for cuda/mps/cpu
     device = None if backend == "cpu" else backend
