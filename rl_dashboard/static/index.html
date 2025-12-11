@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kernel RL Trace Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <header class="navbar">
+    <div class="brand">
+      <span class="glow">Kernel RL</span>
+      <span class="accent">Trace Dashboard</span>
+    </div>
+    <div class="controls">
+      <label class="toggle">
+        <input type="checkbox" id="tail-toggle" checked>
+        <span>Tail newest</span>
+      </label>
+      <button id="refresh-btn" class="btn ghost">Refresh</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Runs</h2>
+        <div class="hint" id="run-hint">Select a run with traces.jsonl</div>
+      </div>
+      <div class="panel-body scroll" id="runs-list">
+        <div class="empty">Loading runs...</div>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <div class="panel-header">
+        <h2>Trace Stream</h2>
+        <div class="hint" id="trace-meta"></div>
+      </div>
+      <div class="panel-toolbar">
+        <label>
+          Mode
+          <select id="mode-filter">
+            <option value="">All</option>
+            <option value="single_turn">single_turn</option>
+            <option value="multi_turn">multi_turn</option>
+          </select>
+        </label>
+        <label>
+          Page size
+          <select id="page-size">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <div class="spacer"></div>
+        <button id="prev-btn" class="btn ghost">Prev</button>
+        <button id="next-btn" class="btn ghost">Next</button>
+      </div>
+      <div class="panel-body scroll" id="trace-list">
+        <div class="empty">Select a run to view traces.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Details</h2>
+        <div class="hint" id="detail-title">Select a trace</div>
+      </div>
+      <div class="panel-body scroll detail" id="trace-detail">
+        <div class="empty">No trace selected.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Metrics (TensorBoard)</h2>
+        <div class="hint">Latest scalars from tensorboard logs</div>
+      </div>
+      <div class="panel-body scroll">
+        <div class="metric-controls">
+          <label>
+            Tag
+            <select id="metric-tags">
+              <option value="">Select a run first</option>
+            </select>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="metric-tail" checked>
+            <span>Tail newest</span>
+          </label>
+          <label>
+            Points
+            <select id="metric-limit">
+              <option value="100">100</option>
+              <option value="300">300</option>
+              <option value="500" selected>500</option>
+            </select>
+          </label>
+          <button class="btn ghost" id="metric-refresh">Load</button>
+        </div>
+        <div class="metric-chart">
+          <canvas id="metric-canvas"></canvas>
+        </div>
+        <div class="hint" id="metric-meta"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

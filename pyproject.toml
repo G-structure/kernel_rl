@@ -51,6 +51,8 @@ dependencies = [
     "mlx>=0.30.0",
     "mlx-lm>=0.28.4",
     "mlx-embedding-models>=0.0.11",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -83,10 +85,11 @@ src = { git = "https://github.com/ScalingIntelligence/KernelBench.git", rev = "4
 train-kernel-rl = "kernel_rl.scripts.train_kernel_rl:main"
 eval-kernel-rl = "kernel_rl.scripts.eval_kernel_rl:main"
 build-rag-index = "kernel_rl.scripts.build_rag_index:main"
+rl-dashboard = "rl_dashboard.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["kernel_rl*"]
+include = ["kernel_rl*", "rl_dashboard*"]
 
 [tool.black]
 line-length = 100

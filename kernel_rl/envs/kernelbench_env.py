@@ -44,7 +44,8 @@ from kernel_rl.envs.kernelbench_client import (
     get_global_retriever,
     set_global_retriever,
 )
-from kernel_rl.training.reward import compute_reward, RewardConfig
+from kernel_rl.training.reward import compute_reward, compute_reward_breakdown, RewardConfig
+from kernel_rl.training.trace_logger import get_trace_logger
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,8 @@ class KernelBenchEnv(Env):
         self._turn = 0
         self._last_result: KernelEvalResult | None = None
         self._last_kernel: str | None = None
+        self._current_prompt_messages: list[renderers.Message] | None = None
+        self._current_observation: tinker.ModelInput | None = None
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -161,6 +164,8 @@ class KernelBenchEnv(Env):
         """
         messages = self._build_initial_messages()
         observation = self.renderer.build_generation_prompt(messages)
+        self._current_prompt_messages = messages
+        self._current_observation = observation
         return observation, self.stop_condition
 
     async def step(self, action: Action) -> StepResult:
@@ -260,6 +265,15 @@ class KernelBenchEnv(Env):
             metrics["time/modal_eval"] = timing_metadata["modal_eval_s"]
         metrics["time/step_total"] = time.perf_counter() - step_start
 
+        # Trace logging (prompt + response + eval)
+        await self._log_trace(
+            parsed=parsed,
+            eval_result=eval_result,
+            format_ok=format_ok,
+            reward=reward,
+            metrics=metrics,
+        )
+
         # Single-turn: episode ends after first step
         # TODO: Multi-turn support would continue here with compiler feedback
         episode_done = True
@@ -271,6 +285,48 @@ class KernelBenchEnv(Env):
             next_stop_condition=self.stop_condition,
             metrics=metrics,
         )
+
+    async def _log_trace(
+        self,
+        parsed: ParsedResponse,
+        eval_result: KernelEvalResult,
+        format_ok: bool,
+        reward: float,
+        metrics: Metrics,
+    ) -> None:
+        """Append a JSONL trace for this step if trace logging is enabled."""
+        trace_logger = get_trace_logger()
+        if trace_logger is None:
+            return
+
+        trace_record = {
+            "mode": "single_turn",
+            "level": self.problem.level,
+            "problem_id": self.problem.problem_id,
+            "backend": self.problem.backend,
+            "dataset_src": self.problem.dataset_src,
+            "prompt_option": self.problem.prompt_option,
+            "raicl_k": self.problem.raicl_k,
+            "turn": self._turn - 1,  # step just completed
+            "prompt_messages": self._current_prompt_messages,
+            "renderer": getattr(self.renderer, "name", type(self.renderer).__name__),
+            "response": {
+                "raw": parsed.raw,
+                "thought": parsed.thought,
+                "kernel": parsed.kernel,
+                "format_ok": format_ok,
+            },
+            "eval_result": eval_result,
+            "reward": reward,
+            "reward_breakdown": compute_reward_breakdown(
+                eval_result, self.reward_config, thought_length=len(parsed.thought)
+            ),
+            "metrics": metrics,
+            "timestamp": time.time(),
+            "stop_condition": str(self.stop_condition),
+        }
+
+        await trace_logger.log(trace_record)
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -51,6 +52,7 @@ from kernel_rl.envs.multiturn_kernelbench_env import (
 )
 from kernel_rl.training.models import ModelConfig, get_adam_params
 from kernel_rl.training.reward import compute_discounted_returns
+from kernel_rl.training.trace_logger import TraceLogger, set_trace_logger
 
 
 def remove_mask(datum: tinker.Datum) -> tinker.Datum:
@@ -132,6 +134,8 @@ class TrainingConfig:
 
     # Resume from checkpoint
     load_checkpoint_path: str | None = None
+    resume_from_batch: int | None = None  # Resume from specific batch number (uses existing checkpoints file)
+    start_batch: int = 0  # Start batch index (used with load_checkpoint_path for new runs)
 
 
 async def do_group_rollout_and_filter(
@@ -642,13 +646,38 @@ async def run_training_loop(
     if tb_logger:
         logger.info(f"TensorBoard: {tb_logger.log_dir}")
 
+    # Set up trace logger (per-step prompts/outputs/evals)
+    trace_logger = TraceLogger(Path(cfg.log_path) / "traces.jsonl")
+    set_trace_logger(trace_logger)
+
     # Check for resume
-    resume_info = checkpoint_utils.get_last_checkpoint(cfg.log_path)
-    if resume_info:
-        start_batch = resume_info["batch"]
-        logger.info(f"Resuming from batch {start_batch}")
+    if cfg.resume_from_batch is not None:
+        # Resume from a specific batch number (uses existing checkpoints file)
+        checkpoints = checkpoint_utils.load_checkpoints_file(cfg.log_path)
+        resume_info = None
+        for ckpt in checkpoints:
+            if ckpt.get("batch") == cfg.resume_from_batch and "state_path" in ckpt:
+                resume_info = ckpt
+                break
+        if resume_info:
+            start_batch = resume_info["batch"]
+            logger.info(f"Resuming from specific batch {start_batch}")
+        else:
+            raise ValueError(f"No checkpoint found for batch {cfg.resume_from_batch}")
+    elif cfg.load_checkpoint_path:
+        # Starting new run from external checkpoint
+        resume_info = None  # Don't use optimizer state from checkpoints file
+        start_batch = cfg.start_batch
+        logger.info(f"Starting new run from external checkpoint at batch {start_batch}")
+        logger.info(f"  Checkpoint: {cfg.load_checkpoint_path}")
     else:
-        start_batch = 0
+        # Resume from last checkpoint
+        resume_info = checkpoint_utils.get_last_checkpoint(cfg.log_path)
+        if resume_info:
+            start_batch = resume_info["batch"]
+            logger.info(f"Resuming from batch {start_batch}")
+        else:
+            start_batch = cfg.start_batch
 
     # Create Tinker clients
     service_client = tinker.ServiceClient(base_url=cfg.base_url)
