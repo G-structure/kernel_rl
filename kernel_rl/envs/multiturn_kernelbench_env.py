@@ -245,7 +245,7 @@ class MultiTurnState:
 
 
 # Multi-turn prompt templates (Kevin/Qwen3 structured format)
-MULTITURN_SYSTEM_PROMPT = """You are an expert GPU kernel developer. Your task is to optimize PyTorch operations by writing efficient custom {backend} kernels.
+MULTITURN_SYSTEM_PROMPT_WITH_THINK = """You are an expert GPU kernel developer. Your task is to optimize PyTorch operations by writing efficient custom {backend} kernels.
 
 When given a PyTorch model and optimization examples, write an optimized kernel implementation. If a previous attempt failed, fix the errors based on the feedback provided.
 
@@ -264,6 +264,26 @@ You MUST respond in exactly this format:
 
 Keep this section under 150 tokens.
 </think>
+
+<KERNEL>
+```python
+# Your complete optimized implementation here
+class ModelNew(nn.Module):
+    ...
+```
+</KERNEL>"""
+
+# Kevin-style prompt without thinking tokens (saves context, matches paper)
+MULTITURN_SYSTEM_PROMPT_NO_THINK = """You are an expert GPU kernel developer. Your task is to optimize PyTorch operations by writing efficient custom {backend} kernels.
+
+When given a PyTorch model and optimization examples, write an optimized kernel implementation. If a previous attempt failed, fix the errors based on the feedback provided.
+
+Your solution must:
+- Be a drop-in replacement as a class named `ModelNew`
+- Use custom {backend} kernels, not just PyTorch operations
+- Be correct and produce the same results as the reference
+
+You MUST respond in exactly this format:
 
 <KERNEL>
 ```python
@@ -294,8 +314,6 @@ REFINEMENT_TEMPLATE = """
 {guidance}
 
 Keep what works. Do not change the function signature unless necessary. Do not use PyTorch APIs for the core computation.
-
-Remember: respond using <think>...</think> followed by <KERNEL>...</KERNEL>.
 """
 # NOTE: Kevin-32B removes thinking/CoT from multi-turn prompts for context management.
 # "each prompt will now only include the previously generated kernels and evaluation results"
@@ -361,11 +379,21 @@ class MultiTurnKernelBenchEnv(Env):
         self.speedup_threshold = speedup_threshold
         self.use_modal = use_modal
         self.modal_timeout = modal_timeout
+        # Kevin-style configs set thinking_weight=0 to remove thinking tokens for context saving
+        self._include_think = self.reward_config.thinking_weight > 0
 
         # Build system prompt
-        self._system_prompt = system_prompt or MULTITURN_SYSTEM_PROMPT.format(
-            backend=problem.backend.upper()
-        )
+        if system_prompt:
+            self._system_prompt = system_prompt
+        else:
+            prompt_template = (
+                MULTITURN_SYSTEM_PROMPT_WITH_THINK
+                if self._include_think
+                else MULTITURN_SYSTEM_PROMPT_NO_THINK
+            )
+            self._system_prompt = prompt_template.format(
+                backend=problem.backend.upper()
+            )
 
         # State
         self._state: MultiTurnState | None = None
@@ -461,6 +489,12 @@ class MultiTurnKernelBenchEnv(Env):
                 error_section=error_section,
                 guidance=guidance,
             )
+            if self._include_think:
+                refinement_text += (
+                    "\nRemember: respond using <think>...</think> followed by <KERNEL>...</KERNEL>."
+                )
+            else:
+                refinement_text += "\nRemember: respond using <KERNEL>...</KERNEL>."
 
             user_content_parts.append(refinement_text)
 

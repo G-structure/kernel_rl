@@ -41,6 +41,7 @@ cuda_version = "12.8.0"
 flavor = "devel"  # includes full CUDA toolkit
 operating_sys = "ubuntu22.04"
 tag = f"{cuda_version}-{flavor}-{operating_sys}"
+kernelbench_src = os.path.join(KERNELBENCH_ROOT, "src")
 
 # Create image with CUDA, compilers, and Python dependencies
 # Use KernelBench requirements.txt to get all dependencies
@@ -54,10 +55,17 @@ image = (
         "g++-10",
         "clang",
     )
-    .pip_install_from_requirements(kernelbench_requirements)
-    # Mount KernelBench src directory (module name "src" from KernelBench)
-    .add_local_python_source("src")
 )
+# Install requirements only if present to avoid failing when KERNELBENCH_ROOT is missing
+if os.path.exists(kernelbench_requirements):
+    image = image.pip_install_from_requirements(kernelbench_requirements)
+# Mount KernelBench src directory (module name "src" from KernelBench)
+if os.path.exists(kernelbench_src):
+    image = image.add_local_python_source(kernelbench_src)
+else:
+    # Fallback: try to mount a local src if available in this repo
+    if os.path.exists("src"):
+        image = image.add_local_python_source("src")
 
 # Create Modal App
 app = modal.App("kernel-rl-evaluator")
@@ -68,7 +76,7 @@ app = modal.App("kernel-rl-evaluator")
     gpu="A100",
     timeout=DEFAULT_TIMEOUT,
     concurrency_limit=32,
-    keep_warm=4,
+    keep_warm=0,
 )
 class KernelEvaluator:
     """Modal class for kernel evaluation with configurable GPU."""
@@ -142,6 +150,21 @@ class KernelEvaluator:
             if match:
                 tests_passed = int(match.group(1))
 
+            runtime_ms = result.runtime if result.runtime > 0 else None
+            baseline_runtime_ms = (
+                result.metadata.get("baseline_runtime_ms")
+                or result.metadata.get("baseline_runtime")
+                or None
+            )
+            speedup = None
+            if (
+                result.correctness
+                and runtime_ms is not None
+                and baseline_runtime_ms
+                and baseline_runtime_ms > 0
+            ):
+                speedup = baseline_runtime_ms / runtime_ms
+
             # Extract error message if any
             error_message = None
             for key in ["runtime_error", "compilation_error", "correctness_issue"]:
@@ -155,9 +178,9 @@ class KernelEvaluator:
                 "correctness": result.correctness,
                 "tests_passed": tests_passed,
                 "tests_total": num_correct_trials,
-                "speedup": None,  # TODO: Calculate from baseline
-                "runtime_ms": result.runtime if result.runtime > 0 else None,
-                "baseline_runtime_ms": None,
+                "speedup": speedup,
+                "runtime_ms": runtime_ms,
+                "baseline_runtime_ms": baseline_runtime_ms,
                 "cheated": False,  # Checked by caller
                 "error_message": error_message,
                 "code_length": len(kernel_code),

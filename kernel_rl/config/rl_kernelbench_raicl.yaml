@@ -84,3 +84,8 @@ dataset_builder:
   prompt_option: "raicl"              # Use retrieval-augmented prompts
   rag_index_path: "./kernel_rag_index"  # Path to pre-built RAG index
   raicl_k: 3                          # Number of retrieved examples per prompt
+
+  # Modal Configuration
+  use_modal: true
+  modal_gpu_type: "A100"
+  modal_timeout: 60.0

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
+from collections import OrderedDict
 import os
 import sys
 import re
@@ -570,6 +572,12 @@ def evaluate_kernel(
             return default_result
 
         # Parse the result
+        runtime_ms = result.runtime if result.runtime > 0 else None
+        baseline_runtime_ms = (
+            result.metadata.get("baseline_runtime_ms")
+            or result.metadata.get("baseline_runtime")
+            or None
+        )
         eval_result: KernelEvalResult = {
             "format_ok": True,
             "compiled": result.compiled,
@@ -577,8 +585,8 @@ def evaluate_kernel(
             "tests_passed": 0,
             "tests_total": num_correct_trials,
             "speedup": None,
-            "runtime_ms": result.runtime if result.runtime > 0 else None,
-            "baseline_runtime_ms": None,  # TODO: fetch baseline
+            "runtime_ms": runtime_ms,
+            "baseline_runtime_ms": baseline_runtime_ms,
             "cheated": cheated,
             "error_message": None,
             "metadata": result.metadata,
@@ -593,11 +601,14 @@ def evaluate_kernel(
                 eval_result["tests_passed"] = int(match.group(1))
                 eval_result["tests_total"] = int(match.group(2))
 
-        # If correct and we have runtime, calculate speedup
-        if eval_result["correctness"] and eval_result["runtime_ms"] is not None:
-            # TODO: Load baseline timing for this problem
-            # For now, speedup is not calculated
-            pass
+        # If correct and we have baseline/runtime, calculate speedup
+        if (
+            eval_result["correctness"]
+            and eval_result["runtime_ms"] is not None
+            and baseline_runtime_ms
+            and baseline_runtime_ms > 0
+        ):
+            eval_result["speedup"] = baseline_runtime_ms / eval_result["runtime_ms"]
 
         # Check for errors in metadata
         if "runtime_error" in result.metadata:
@@ -622,7 +633,8 @@ async def evaluate_kernel_async(
     num_correct_trials: int = 5,
     measure_performance: bool = False,
     num_perf_trials: int = 100,
-    timeout: float = 180.0,
+    timeout: float = 120.0,
+    cache_results: bool = True,
 ) -> KernelEvalResult:
     """
     Evaluate a generated kernel using Modal for isolated GPU execution.
@@ -652,6 +664,20 @@ async def evaluate_kernel_async(
     )
     t_total_start = time.perf_counter()
     timings: dict[str, float] = {}
+
+    # Simple LRU cache to avoid re-evaluating identical kernels for the same problem.
+    # We cache even failures to avoid repeatedly paying for hopeless kernels.
+    _eval_cache: OrderedDict[str, KernelEvalResult] = getattr(
+        evaluate_kernel_async, "_eval_cache", OrderedDict()
+    )
+
+    def _make_cache_key(code: str) -> str:
+        h = hashlib.sha1(code.encode("utf-8"), usedforsecurity=False).hexdigest()
+        return f"{level}:{problem_id}:{backend}:{dataset_src}:{h}"
+
+    def _prune_cache(maxsize: int = 512) -> None:
+        while len(_eval_cache) > maxsize:
+            _eval_cache.popitem(last=False)
 
     # Default result for failures
     default_result: KernelEvalResult = {
@@ -694,6 +720,18 @@ async def evaluate_kernel_async(
         default_result["metadata"]["timings"] = timings
         return default_result
 
+    # Cache lookup after format/cheating checks
+    cache_key = _make_cache_key(kernel_code)
+    if cache_results and cache_key in _eval_cache:
+        cached = _eval_cache[cache_key].copy()
+        cached["metadata"] = dict(cached.get("metadata", {}))
+        cached["metadata"]["cache_hit"] = True
+        cached["metadata"].setdefault("timings", timings)
+        cached["metadata"]["timings"]["total_eval_s"] = time.perf_counter() - t_total_start
+        # Move to end for LRU ordering
+        _eval_cache.move_to_end(cache_key)
+        return cached
+
     # Get reference code
     ref_start = time.perf_counter()
     try:
@@ -726,6 +764,11 @@ async def evaluate_kernel_async(
         # Add cheating flag (checked locally, not on Modal)
         result["cheated"] = cheated
 
+        if cache_results:
+            result_copy = result.copy()
+            _eval_cache[cache_key] = result_copy
+            _prune_cache()
+
         timings["modal_eval_s"] = time.perf_counter() - modal_start
         timings["total_eval_s"] = time.perf_counter() - t_total_start
         result_metadata = result.get("metadata", {}) or {}
@@ -747,7 +790,14 @@ async def evaluate_kernel_async(
         timings["modal_eval_s"] = time.perf_counter() - modal_start
         timings["total_eval_s"] = time.perf_counter() - t_total_start
         default_result["metadata"]["timings"] = timings
+        if cache_results:
+            default_copy = default_result.copy()
+            _eval_cache[cache_key] = default_copy
+            _prune_cache()
         return default_result
+
+# Attach cache container to function for reuse
+evaluate_kernel_async._eval_cache = OrderedDict()  # type: ignore[attr-defined]
 
 
 async def evaluate_kernel_batch_async(

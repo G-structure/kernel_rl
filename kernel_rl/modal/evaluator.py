@@ -43,7 +43,7 @@ class ModalEvaluatorConfig:
     max_batch_size: int = 32  # Max kernels to evaluate in parallel
     return_exceptions: bool = True  # Return exceptions as results
     batch_single: bool = True  # Coalesce single evals into batches
-    batch_window_s: float = 0.05  # Coalesce window for single-eval batching
+    batch_window_s: float = 0.15  # Coalesce window for single-eval batching
 
     # API configuration
     modal_token_env: str = "MODAL_TOKEN_ID"  # Environment variable for Modal token

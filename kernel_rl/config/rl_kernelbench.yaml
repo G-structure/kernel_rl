@@ -24,7 +24,7 @@
 # Kevin uses QwQ-32B, we use Qwen3-30B-A3B (similar architecture)
 # =============================================================================
 model_name: "Qwen/Qwen3-30B-A3B"
-lora_rank: 256
+lora_rank: 64  # Tinker max for Qwen3-30B-A3B
 learning_rate: 0.000002 # Kevin uses 2e-6 (very conservative)
 
 # =============================================================================
@@ -122,4 +122,4 @@ dataset_builder:
     # ==========================================================================
     use_modal: true # Enable Modal for isolated kernel evaluation
     modal_gpu_type: "A100" # GPU type: A100, H100, L40S, T4
-    modal_timeout: 180.0 # Hard timeout per kernel (seconds)
+    modal_timeout: 60.0 # Hard timeout per kernel (seconds)
